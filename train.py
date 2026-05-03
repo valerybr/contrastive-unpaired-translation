@@ -28,6 +28,8 @@ if __name__ == '__main__':
         visualizer.reset()              # reset the visualizer: make sure it saves the results to HTML at least once every epoch
 
         dataset.set_epoch(epoch)
+        epoch_loss_sums = {}
+        epoch_loss_count = 0
         for i, data in enumerate(dataset):  # inner loop within one epoch
             iter_start_time = time.time()  # timer for computation per iteration
             if total_iters % opt.print_freq == 0:
@@ -48,6 +50,10 @@ if __name__ == '__main__':
             if len(opt.gpu_ids) > 0:
                 torch.cuda.synchronize()
             optimize_time = (time.time() - optimize_start_time) / batch_size * 0.005 + 0.995 * optimize_time
+
+            for k, v in model.get_current_losses().items():
+                epoch_loss_sums[k] = epoch_loss_sums.get(k, 0.0) + float(v)
+            epoch_loss_count += 1
 
             if total_iters % opt.display_freq == 0:   # display images on visdom and save images to a HTML file
                 save_result = total_iters % opt.update_html_freq == 0
@@ -72,6 +78,14 @@ if __name__ == '__main__':
             print('saving the model at the end of epoch %d, iters %d' % (epoch, total_iters))
             model.save_networks('latest')
             model.save_networks(epoch)
+
+        if epoch_loss_count > 0:
+            avg_msg = '(epoch %d avg over %d iters) ' % (epoch, epoch_loss_count)
+            for k, total in epoch_loss_sums.items():
+                avg_msg += '%s: %.3f ' % (k, total / epoch_loss_count)
+            print(avg_msg)
+            with open(visualizer.log_name, "a") as log_file:
+                log_file.write('%s\n' % avg_msg)
 
         print('End of epoch %d / %d \t Time Taken: %d sec' % (epoch, opt.n_epochs + opt.n_epochs_decay, time.time() - epoch_start_time))
         model.update_learning_rate()                     # update learning rates at the end of every epoch.
