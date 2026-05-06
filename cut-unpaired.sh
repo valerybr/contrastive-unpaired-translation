@@ -3,10 +3,10 @@
 #SBATCH --output=/home/valeryb/logs/cut_unpaired.out
 #SBATCH --error=/home/valeryb/logs/cut_unpaired.err
 #SBATCH --partition=gpu-rtx
-#SBATCH --gres=gpu:rtx6000:1
+#SBATCH --gres=gpu:rtx6000:2
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=4
-#SBATCH --mem=16G
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=32G
 #SBATCH --time=24:00:00
 
 
@@ -27,8 +27,9 @@ python train.py \
   --name vindr_unpaired_bilateral_CUT \
   --CUT_mode CUT \
   --dataset_mode unpaired_bilateral \
-  --batch_size 1 \
-  --num_threads 2 \
+  --gpu_ids 0,1 \
+  --batch_size 2 \
+  --num_threads 4 \
   --display_id 0 \
   --checkpoints_dir /home/management/projects/gilba/valeryb/cut_checkpoints \
   --use_wandb \
