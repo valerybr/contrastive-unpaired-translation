@@ -69,6 +69,18 @@ class BaseOptions():
                             default=1, type=int,
                             help='Number of downsampling layers used by StyleGAN2Generator')
 
+        # wandb logging (gated to rank 0 under DDP)
+        parser.add_argument('--use_wandb', type=util.str2bool, nargs='?', const=True, default=False,
+                            help='enable Weights & Biases logging during training')
+        parser.add_argument('--wandb_project', type=str, default='cut',
+                            help='wandb project name')
+        parser.add_argument('--wandb_entity', type=str, default=None,
+                            help='wandb entity (team or user); None uses the default')
+        parser.add_argument('--wandb_run_name', type=str, default=None,
+                            help='wandb run name; defaults to opt.name')
+        parser.add_argument('--wandb_watch_model', type=util.str2bool, nargs='?', const=True, default=False,
+                            help='if True, call wandb.watch on G/D/F to log gradients (slower)')
+
         self.initialized = True
         return parser
 

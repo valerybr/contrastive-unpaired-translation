@@ -12,6 +12,12 @@ else:
     VisdomExceptionBase = ConnectionError
 
 
+def _is_main_process():
+    # Under torchrun/DDP, RANK is set per-process. Default 0 covers single-process
+    # (DataParallel or CPU/single-GPU) where everyone is "main".
+    return int(os.environ.get("RANK", "0")) == 0
+
+
 def save_images(webpage, visuals, image_path, aspect_ratio=1.0, width=256):
     """Save images to the disk.
 
@@ -60,16 +66,20 @@ class Visualizer():
         Step 4: create a logging file to store training losses
         """
         self.opt = opt  # cache the option
+        self.is_main = _is_main_process()
         if opt.display_id is None:
             self.display_id = np.random.randint(100000) * 10  # just a random display id
         else:
             self.display_id = opt.display_id
-        self.use_html = opt.isTrain and not opt.no_html
+        # Only the main process drives display/HTML/wandb under DDP; other ranks no-op.
+        self.use_html = opt.isTrain and not opt.no_html and self.is_main
+        self.use_wandb = bool(getattr(opt, 'use_wandb', False)) and opt.isTrain and self.is_main
+        self.wandb_run = None
         self.win_size = opt.display_winsize
         self.name = opt.name
         self.port = opt.display_port
         self.saved = False
-        if self.display_id > 0:  # connect to a visdom server given <display_port> and <display_server>
+        if self.display_id > 0 and self.is_main:  # connect to a visdom server given <display_port> and <display_server>
             import visdom
             self.plot_data = {}
             self.ncols = opt.display_ncols
@@ -81,6 +91,18 @@ class Visualizer():
             if not self.vis.check_connection():
                 self.create_visdom_connections()
 
+        if self.use_wandb:
+            import wandb
+            self.wandb = wandb
+            self.wandb_run = wandb.init(
+                project=opt.wandb_project,
+                entity=opt.wandb_entity,
+                name=opt.wandb_run_name or opt.name,
+                config=vars(opt),
+                dir=os.path.join(opt.checkpoints_dir, opt.name),
+                resume='allow',
+            )
+
         if self.use_html:  # create an HTML object at <checkpoints_dir>/web/; images will be saved under <checkpoints_dir>/web/images/
             self.web_dir = os.path.join(opt.checkpoints_dir, opt.name, 'web')
             self.img_dir = os.path.join(self.web_dir, 'images')
@@ -88,9 +110,10 @@ class Visualizer():
             util.mkdirs([self.web_dir, self.img_dir])
         # create a logging file to store training losses
         self.log_name = os.path.join(opt.checkpoints_dir, opt.name, 'loss_log.txt')
-        with open(self.log_name, "a") as log_file:
-            now = time.strftime("%c")
-            log_file.write('================ Training Loss (%s) ================\n' % now)
+        if self.is_main:
+            with open(self.log_name, "a") as log_file:
+                now = time.strftime("%c")
+                log_file.write('================ Training Loss (%s) ================\n' % now)
 
     def reset(self):
         """Reset the self.saved status"""
@@ -103,14 +126,17 @@ class Visualizer():
         print('Command: %s' % cmd)
         Popen(cmd, shell=True, stdout=PIPE, stderr=PIPE)
 
-    def display_current_results(self, visuals, epoch, save_result):
+    def display_current_results(self, visuals, epoch, save_result, step=None):
         """Display current results on visdom; save current results to an HTML file.
 
         Parameters:
             visuals (OrderedDict) - - dictionary of images to display or save
             epoch (int) - - the current epoch
             save_result (bool) - - if save the current results to an HTML file
+            step (int) - - global iteration step, used as wandb x-axis
         """
+        if not self.is_main:
+            return
         if self.display_id > 0:  # show images in the browser using visdom
             ncols = self.ncols
             if ncols > 0:        # show all the images in one visdom panel
@@ -188,39 +214,76 @@ class Visualizer():
                 webpage.add_images(ims, txts, links, width=self.win_size)
             webpage.save()
 
-    def plot_current_losses(self, epoch, counter_ratio, losses):
+        if self.use_wandb:
+            log_payload = {'epoch': epoch}
+            for label, image in visuals.items():
+                log_payload['images/%s' % label] = self.wandb.Image(util.tensor2im(image), caption=label)
+            self.wandb.log(log_payload, step=step)
+
+    def plot_current_losses(self, epoch, counter_ratio, losses, step=None):
         """display the current losses on visdom display: dictionary of error labels and values
 
         Parameters:
             epoch (int)           -- current epoch
             counter_ratio (float) -- progress (percentage) in the current epoch, between 0 to 1
             losses (OrderedDict)  -- training losses stored in the format of (name, float) pairs
+            step (int)            -- global iteration step, used as wandb x-axis
         """
-        if len(losses) == 0:
+        if len(losses) == 0 or not self.is_main:
             return
 
-        plot_name = '_'.join(list(losses.keys()))
+        if self.display_id > 0:
+            plot_name = '_'.join(list(losses.keys()))
 
-        if plot_name not in self.plot_data:
-            self.plot_data[plot_name] = {'X': [], 'Y': [], 'legend': list(losses.keys())}
+            if plot_name not in self.plot_data:
+                self.plot_data[plot_name] = {'X': [], 'Y': [], 'legend': list(losses.keys())}
 
-        plot_data = self.plot_data[plot_name]
-        plot_id = list(self.plot_data.keys()).index(plot_name)
+            plot_data = self.plot_data[plot_name]
+            plot_id = list(self.plot_data.keys()).index(plot_name)
 
-        plot_data['X'].append(epoch + counter_ratio)
-        plot_data['Y'].append([losses[k] for k in plot_data['legend']])
-        try:
-            self.vis.line(
-                X=np.stack([np.array(plot_data['X'])] * len(plot_data['legend']), 1),
-                Y=np.array(plot_data['Y']),
-                opts={
-                    'title': self.name,
-                    'legend': plot_data['legend'],
-                    'xlabel': 'epoch',
-                    'ylabel': 'loss'},
-                win=self.display_id - plot_id)
-        except VisdomExceptionBase:
-            self.create_visdom_connections()
+            plot_data['X'].append(epoch + counter_ratio)
+            plot_data['Y'].append([losses[k] for k in plot_data['legend']])
+            try:
+                self.vis.line(
+                    X=np.stack([np.array(plot_data['X'])] * len(plot_data['legend']), 1),
+                    Y=np.array(plot_data['Y']),
+                    opts={
+                        'title': self.name,
+                        'legend': plot_data['legend'],
+                        'xlabel': 'epoch',
+                        'ylabel': 'loss'},
+                    win=self.display_id - plot_id)
+            except VisdomExceptionBase:
+                self.create_visdom_connections()
+
+        if self.use_wandb:
+            payload = {'train/%s' % k: v for k, v in losses.items()}
+            payload['epoch'] = epoch + counter_ratio
+            self.wandb.log(payload, step=step)
+
+    def log_epoch_averages(self, epoch, avg_losses, lr=None, step=None):
+        """Log per-epoch averaged losses (and optionally LR) to wandb."""
+        if not self.use_wandb:
+            return
+        payload = {'epoch_avg/%s' % k: v for k, v in avg_losses.items()}
+        payload['epoch'] = epoch
+        if lr is not None:
+            payload['train/lr'] = lr
+        self.wandb.log(payload, step=step)
+
+    def watch_model(self, model):
+        """Optional: track gradients/parameters of the GAN networks."""
+        if not self.use_wandb or not getattr(self.opt, 'wandb_watch_model', False):
+            return
+        for name in getattr(model, 'model_names', []):
+            net = getattr(model, 'net' + name, None)
+            if net is not None:
+                self.wandb.watch(net, log='gradients', log_freq=max(self.opt.print_freq, 1) * 100, idx=hash(name) & 0xFFFF)
+
+    def finish(self):
+        if self.use_wandb and self.wandb_run is not None:
+            self.wandb.finish()
+            self.wandb_run = None
 
     # losses: same format as |losses| of plot_current_losses
     def print_current_losses(self, epoch, iters, losses, t_comp, t_data):
@@ -233,6 +296,8 @@ class Visualizer():
             t_comp (float) -- computational time per data point (normalized by batch_size)
             t_data (float) -- data loading time per data point (normalized by batch_size)
         """
+        if not self.is_main:
+            return
         message = '(epoch: %d, iters: %d, time: %.3f, data: %.3f) ' % (epoch, iters, t_comp, t_data)
         for k, v in losses.items():
             message += '%s: %.3f ' % (k, v)

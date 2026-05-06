@@ -45,6 +45,7 @@ if __name__ == '__main__':
                 model.data_dependent_initialize(data)
                 model.setup(opt)               # regular setup: load and print networks; create schedulers
                 model.parallelize()
+                visualizer.watch_model(model)
             model.set_input(data)  # unpack data from dataset and apply preprocessing
             model.optimize_parameters()   # calculate loss functions, get gradients, update network weights
             if len(opt.gpu_ids) > 0:
@@ -58,13 +59,13 @@ if __name__ == '__main__':
             if total_iters % opt.display_freq == 0:   # display images on visdom and save images to a HTML file
                 save_result = total_iters % opt.update_html_freq == 0
                 model.compute_visuals()
-                visualizer.display_current_results(model.get_current_visuals(), epoch, save_result)
+                visualizer.display_current_results(model.get_current_visuals(), epoch, save_result, step=total_iters)
 
             if total_iters % opt.print_freq == 0:    # print training losses and save logging information to the disk
                 losses = model.get_current_losses()
                 visualizer.print_current_losses(epoch, epoch_iter, losses, optimize_time, t_data)
-                if opt.display_id is None or opt.display_id > 0:
-                    visualizer.plot_current_losses(epoch, float(epoch_iter) / dataset_size, losses)
+                if opt.display_id is None or opt.display_id > 0 or getattr(opt, 'use_wandb', False):
+                    visualizer.plot_current_losses(epoch, float(epoch_iter) / dataset_size, losses, step=total_iters)
 
             if total_iters % opt.save_latest_freq == 0:   # cache our latest model every <save_latest_freq> iterations
                 print('saving the latest model (epoch %d, total_iters %d)' % (epoch, total_iters))
@@ -79,13 +80,18 @@ if __name__ == '__main__':
             model.save_networks('latest')
             model.save_networks(epoch)
 
+        avg_losses = {}
         if epoch_loss_count > 0:
+            avg_losses = {k: total / epoch_loss_count for k, total in epoch_loss_sums.items()}
             avg_msg = '(epoch %d avg over %d iters) ' % (epoch, epoch_loss_count)
-            for k, total in epoch_loss_sums.items():
-                avg_msg += '%s: %.3f ' % (k, total / epoch_loss_count)
+            for k, v in avg_losses.items():
+                avg_msg += '%s: %.3f ' % (k, v)
             print(avg_msg)
             with open(visualizer.log_name, "a") as log_file:
                 log_file.write('%s\n' % avg_msg)
 
         print('End of epoch %d / %d \t Time Taken: %d sec' % (epoch, opt.n_epochs + opt.n_epochs_decay, time.time() - epoch_start_time))
-        model.update_learning_rate()                     # update learning rates at the end of every epoch.
+        lr = model.update_learning_rate()                # update learning rates at the end of every epoch.
+        visualizer.log_epoch_averages(epoch, avg_losses, lr=lr, step=total_iters)
+
+    visualizer.finish()
