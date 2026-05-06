@@ -14,6 +14,10 @@ source /home/valeryb/.bashrc
 conda activate mgdetect
 cd /home/valeryb/contrastive-unpaired-translation
 
+# wandb auth: set WANDB_API_KEY in ~/.bashrc or export it here.
+# Compute nodes may not see ~/.netrc, so prefer the env var.
+export WANDB_API_KEY="${WANDB_API_KEY:?WANDB_API_KEY is not set; export it before sbatch}"
+
 
 python train.py \
   --dataroot /home/management/projects/gilba/valeryb/data/vindr/images \
@@ -26,7 +30,10 @@ python train.py \
   --batch_size 1 \
   --num_threads 2 \
   --display_id 0 \
-  --checkpoints_dir /home/management/projects/gilba/valeryb/cut_checkpoints 
+  --checkpoints_dir /home/management/projects/gilba/valeryb/cut_checkpoints \
+  --use_wandb \
+  --wandb_project cut-vindr \
+  --wandb_run_name vindr_unpaired_bilateral_cut1
   #\
   #--continue_train --epoch 60 --epoch_count 61
 
