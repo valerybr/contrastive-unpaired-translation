@@ -21,6 +21,12 @@ export WANDB_API_KEY="${WANDB_API_KEY:?WANDB_API_KEY is not set; export it befor
 # DDP-specific tunables
 export NCCL_ASYNC_ERROR_HANDLING=1
 export OMP_NUM_THREADS=4
+# Bump NCCL collective timeout from 10 min → 30 min to tolerate slow NFS
+# writes (rank 0 saves checkpoints to a shared filesystem while other ranks
+# wait at the post-save barrier).
+export TORCH_NCCL_BLOCKING_WAIT=1
+export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
+export TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC=1800
 
 RUN_NAME=vindr_unpaired_bilateral_ddp1
 

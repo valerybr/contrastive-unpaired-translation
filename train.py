@@ -103,6 +103,7 @@ if __name__ == '__main__':
                     print(opt.name)  # it's useful to occasionally show the experiment name on console
                 save_suffix = 'iter_%d' % total_iters if opt.save_by_iter else 'latest'
                 model.save_networks(save_suffix)  # internally rank-0-gated
+                udist.barrier()  # wait for rank 0's I/O so others don't get ahead and timeout
 
             iter_data_time = time.time()
 
@@ -111,6 +112,7 @@ if __name__ == '__main__':
                 print('saving the model at the end of epoch %d, iters %d' % (epoch, total_iters))
             model.save_networks('latest')
             model.save_networks(epoch)
+            udist.barrier()  # resync after rank-0-only I/O
 
         avg_losses = {}
         if epoch_loss_count > 0:

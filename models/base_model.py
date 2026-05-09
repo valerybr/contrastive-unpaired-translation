@@ -186,7 +186,10 @@ class BaseModel(ABC):
         errors_ret = OrderedDict()
         for name in self.loss_names:
             if isinstance(name, str):
-                errors_ret[name] = float(getattr(self, 'loss_' + name))  # float(...) works for both scalar tensor and float number
+                v = getattr(self, 'loss_' + name)
+                if torch.is_tensor(v):
+                    v = v.detach()
+                errors_ret[name] = float(v)
         return errors_ret
 
     def save_networks(self, epoch):
@@ -204,12 +207,13 @@ class BaseModel(ABC):
                 save_path = os.path.join(self.save_dir, save_filename)
                 net = getattr(self, 'net' + name)
                 inner = _unwrap(net)
-
-                if len(self.gpu_ids) > 0 and torch.cuda.is_available():
-                    torch.save(inner.cpu().state_dict(), save_path)
-                    inner.cuda(self.gpu_ids[0])
-                else:
-                    torch.save(inner.cpu().state_dict(), save_path)
+                # Clone the state_dict to CPU instead of moving the live
+                # module. Moving a DDP-wrapped module's underlying tensors
+                # off the GPU mid-training breaks DDP's device tracking and
+                # blocks the other ranks' next allreduce until rank 0
+                # finishes the .cpu()/.cuda() round-trip and the disk write.
+                state = {k: v.detach().cpu() for k, v in inner.state_dict().items()}
+                torch.save(state, save_path)
 
     def __patch_instance_norm_state_dict(self, state_dict, module, keys, i=0):
         """Fix InstanceNorm checkpoints incompatibility (prior to 0.4)"""
