@@ -3,9 +3,9 @@
 #SBATCH --output=/home/valeryb/logs/cut_unpaired_ddp.out
 #SBATCH --error=/home/valeryb/logs/cut_unpaired_ddp.err
 #SBATCH --partition=gpu-rtx
-#SBATCH --gres=gpu:rtx6000:4
+#SBATCH --gres=gpu:rtx6000:8
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8
+#SBATCH --cpus-per-task=16
 #SBATCH --mem=32G
 #SBATCH --time=24:00:00
 
@@ -16,7 +16,7 @@ cd /home/valeryb/contrastive-unpaired-translation
 
 # wandb auth: set WANDB_API_KEY in ~/.bashrc or export it here.
 # Compute nodes may not see ~/.netrc, so prefer the env var.
-export WANDB_API_KEY="${WANDB_API_KEY:?WANDB_API_KEY is not set; export it before sbatch}"
+#export WANDB_API_KEY="${WANDB_API_KEY:?WANDB_API_KEY is not set; export it before sbatch}"
 
 # DDP-specific tunables
 export NCCL_ASYNC_ERROR_HANDLING=1
@@ -28,7 +28,7 @@ export TORCH_NCCL_BLOCKING_WAIT=1
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 export TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC=1800
 
-RUN_NAME=vindr_unpaired_bilateral_ddp1
+RUN_NAME=vindr_unpaired_bilateral_ddp2
 
 # nproc_per_node should match the number of GPUs requested above.
 # --batch_size below is PER-RANK; effective global batch = batch_size * nproc_per_node.
@@ -41,7 +41,7 @@ torchrun --standalone --nnodes=1 --nproc_per_node=4 train.py \
   --name $RUN_NAME \
   --CUT_mode CUT \
   --dataset_mode unpaired_bilateral \
-  --batch_size 2 \
+  --batch_size 1 \
   --num_threads 4 \
   --display_id 0 \
   --checkpoints_dir /home/management/projects/gilba/valeryb/cut_checkpoints \
