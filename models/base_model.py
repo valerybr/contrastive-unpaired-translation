@@ -3,6 +3,12 @@ import torch
 from collections import OrderedDict
 from abc import ABC, abstractmethod
 from . import networks
+from util import dist as udist
+
+
+def _unwrap(net):
+    """Strip DataParallel / DistributedDataParallel wrappers, if any."""
+    return getattr(net, 'module', net)
 
 
 class BaseModel(ABC):
@@ -101,10 +107,30 @@ class BaseModel(ABC):
         self.print_networks(opt.verbose)
 
     def parallelize(self):
-        for name in self.model_names:
-            if isinstance(name, str):
-                net = getattr(self, 'net' + name)
-                setattr(self, 'net' + name, torch.nn.DataParallel(net, self.opt.gpu_ids))
+        if udist.is_ddp():
+            local_rank = udist.get_local_rank()
+            for name in self.model_names:
+                if isinstance(name, str):
+                    net = getattr(self, 'net' + name)
+                    # netD has set_requires_grad(False) flipped each step during
+                    # the G update; with find_unused_parameters=True DDP
+                    # tolerates that path. broadcast_buffers=False avoids
+                    # syncing BatchNorm running stats every step (and the
+                    # default norm here is InstanceNorm anyway).
+                    find_unused = (name == 'D')
+                    ddp_net = torch.nn.parallel.DistributedDataParallel(
+                        net,
+                        device_ids=[local_rank],
+                        output_device=local_rank,
+                        broadcast_buffers=False,
+                        find_unused_parameters=find_unused,
+                    )
+                    setattr(self, 'net' + name, ddp_net)
+        else:
+            for name in self.model_names:
+                if isinstance(name, str):
+                    net = getattr(self, 'net' + name)
+                    setattr(self, 'net' + name, torch.nn.DataParallel(net, self.opt.gpu_ids))
 
     def data_dependent_initialize(self, data):
         pass
@@ -143,7 +169,8 @@ class BaseModel(ABC):
                 scheduler.step()
 
         lr = self.optimizers[0].param_groups[0]['lr']
-        print('learning rate = %.7f' % lr)
+        if udist.is_main():
+            print('learning rate = %.7f' % lr)
         return lr
 
     def get_current_visuals(self):
@@ -168,17 +195,21 @@ class BaseModel(ABC):
         Parameters:
             epoch (int) -- current epoch; used in the file name '%s_net_%s.pth' % (epoch, name)
         """
+        # Only rank 0 writes — every other rank no-ops.
+        if not udist.is_main():
+            return
         for name in self.model_names:
             if isinstance(name, str):
                 save_filename = '%s_net_%s.pth' % (epoch, name)
                 save_path = os.path.join(self.save_dir, save_filename)
                 net = getattr(self, 'net' + name)
+                inner = _unwrap(net)
 
                 if len(self.gpu_ids) > 0 and torch.cuda.is_available():
-                    torch.save(net.module.cpu().state_dict(), save_path)
-                    net.cuda(self.gpu_ids[0])
+                    torch.save(inner.cpu().state_dict(), save_path)
+                    inner.cuda(self.gpu_ids[0])
                 else:
-                    torch.save(net.cpu().state_dict(), save_path)
+                    torch.save(inner.cpu().state_dict(), save_path)
 
     def __patch_instance_norm_state_dict(self, state_dict, module, keys, i=0):
         """Fix InstanceNorm checkpoints incompatibility (prior to 0.4)"""
@@ -210,9 +241,10 @@ class BaseModel(ABC):
 
                 load_path = os.path.join(load_dir, load_filename)
                 net = getattr(self, 'net' + name)
-                if isinstance(net, torch.nn.DataParallel):
-                    net = net.module
-                print('loading the model from %s' % load_path)
+                # Handle DataParallel and DistributedDataParallel uniformly.
+                net = _unwrap(net)
+                if udist.is_main():
+                    print('loading the model from %s' % load_path)
                 # if you are using PyTorch newer than 0.4 (e.g., built from
                 # GitHub source), you can remove str() on self.device
                 state_dict = torch.load(load_path, map_location=str(self.device))
@@ -230,6 +262,8 @@ class BaseModel(ABC):
         Parameters:
             verbose (bool) -- if verbose: print the network architecture
         """
+        if not udist.is_main():
+            return
         print('---------- Networks initialized -------------')
         for name in self.model_names:
             if isinstance(name, str):

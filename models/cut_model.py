@@ -4,6 +4,7 @@ from .base_model import BaseModel
 from . import networks
 from .patchnce import PatchNCELoss
 import util.util as util
+from util import dist as udist
 
 
 class CUTModel(BaseModel):
@@ -98,7 +99,12 @@ class CUTModel(BaseModel):
         initialized at the first feedforward pass with some input images.
         Please also see PatchSampleF.create_mlp(), which is called at the first forward() call.
         """
-        bs_per_gpu = data["A"].size(0) // max(len(self.opt.gpu_ids), 1)
+        # Under DDP each rank already receives only its shard, so the local
+        # data["A"] *is* the per-GPU batch — don't divide further.
+        if udist.is_ddp():
+            bs_per_gpu = data["A"].size(0)
+        else:
+            bs_per_gpu = data["A"].size(0) // max(len(self.opt.gpu_ids), 1)
         self.set_input(data)
         self.real_A = self.real_A[:bs_per_gpu]
         self.real_B = self.real_B[:bs_per_gpu]
@@ -147,7 +153,10 @@ class CUTModel(BaseModel):
         """Run forward pass; called by both functions <optimize_parameters> and <test>."""
         self.real = torch.cat((self.real_A, self.real_B), dim=0) if self.opt.nce_idt and self.opt.isTrain else self.real_A
         if self.opt.flip_equivariance:
-            self.flipped_for_equivariance = self.opt.isTrain and (np.random.random() < 0.5)
+            # Under DDP every rank must agree on whether this step is flipped,
+            # otherwise the NCE pairing diverges across ranks.
+            local_flip = self.opt.isTrain and (np.random.random() < 0.5)
+            self.flipped_for_equivariance = udist.broadcast_bool(local_flip, src=0, device=self.device)
             if self.flipped_for_equivariance:
                 self.real = torch.flip(self.real, [3])
 

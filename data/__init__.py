@@ -13,6 +13,7 @@ See our template dataset class 'template_dataset.py' for more details.
 import importlib
 import torch.utils.data
 from data.base_dataset import BaseDataset
+from util import dist as udist
 
 
 def find_dataset_using_name(dataset_name):
@@ -71,17 +72,41 @@ class CustomDatasetDataLoader():
         self.opt = opt
         dataset_class = find_dataset_using_name(opt.dataset_mode)
         self.dataset = dataset_class(opt)
-        print("dataset [%s] was created" % type(self.dataset).__name__)
-        self.dataloader = torch.utils.data.DataLoader(
-            self.dataset,
-            batch_size=opt.batch_size,
-            shuffle=not opt.serial_batches,
-            num_workers=int(opt.num_threads),
-            drop_last=True if opt.isTrain else False,
-        )
+        if udist.is_main():
+            print("dataset [%s] was created" % type(self.dataset).__name__)
+
+        self.sampler = None
+        if udist.is_ddp():
+            # Under DDP each rank gets a disjoint shard. DistributedSampler
+            # also handles per-epoch shuffling via set_epoch.
+            self.sampler = torch.utils.data.distributed.DistributedSampler(
+                self.dataset,
+                num_replicas=udist.get_world_size(),
+                rank=udist.get_rank(),
+                shuffle=not opt.serial_batches,
+                drop_last=bool(opt.isTrain),
+            )
+            self.dataloader = torch.utils.data.DataLoader(
+                self.dataset,
+                batch_size=opt.batch_size,
+                sampler=self.sampler,
+                shuffle=False,
+                num_workers=int(opt.num_threads),
+                drop_last=True if opt.isTrain else False,
+            )
+        else:
+            self.dataloader = torch.utils.data.DataLoader(
+                self.dataset,
+                batch_size=opt.batch_size,
+                shuffle=not opt.serial_batches,
+                num_workers=int(opt.num_threads),
+                drop_last=True if opt.isTrain else False,
+            )
 
     def set_epoch(self, epoch):
         self.dataset.current_epoch = epoch
+        if self.sampler is not None:
+            self.sampler.set_epoch(epoch)
 
     def load_data(self):
         return self
@@ -92,7 +117,11 @@ class CustomDatasetDataLoader():
 
     def __iter__(self):
         """Return a batch of data"""
+        # Under DDP each rank only sees 1/world_size of the data per epoch, so
+        # the cap on iterations needs to count the global batch size.
+        world_size = udist.get_world_size() if udist.is_ddp() else 1
+        global_batch = self.opt.batch_size * world_size
         for i, data in enumerate(self.dataloader):
-            if i * self.opt.batch_size >= self.opt.max_dataset_size:
+            if i * global_batch >= self.opt.max_dataset_size:
                 break
             yield data

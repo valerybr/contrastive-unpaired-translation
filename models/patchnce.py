@@ -33,7 +33,12 @@ class PatchNCELoss(nn.Module):
             # reshape features as if they are all negatives of minibatch of size 1.
             batch_dim_for_bmm = 1
         else:
-            batch_dim_for_bmm = self.opt.batch_size
+            # Derive from the actual feat_q shape rather than self.opt.batch_size.
+            # Under DDP each rank only sees local_batch * num_patches features,
+            # not global_batch * num_patches; under DataParallel the reverse.
+            # Note: under DDP "negatives from the minibatch" means the local
+            # rank's minibatch — there is no cross-rank gather here.
+            batch_dim_for_bmm = feat_q.shape[0] // self.opt.num_patches
 
         # reshape features to batch size
         feat_q = feat_q.view(batch_dim_for_bmm, -1, dim)

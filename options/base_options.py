@@ -1,6 +1,7 @@
 import argparse
 import os
 from util import util
+from util import dist as udist
 import torch
 import models
 import data
@@ -136,19 +137,21 @@ class BaseOptions():
                 comment = '\t[default: %s]' % str(default)
             message += '{:>25}: {:<30}{}\n'.format(str(k), str(v), comment)
         message += '----------------- End -------------------'
-        print(message)
+        if udist.is_main():
+            print(message)
 
-        # save to the disk
-        expr_dir = os.path.join(opt.checkpoints_dir, opt.name)
-        util.mkdirs(expr_dir)
-        file_name = os.path.join(expr_dir, '{}_opt.txt'.format(opt.phase))
-        try:
-            with open(file_name, 'wt') as opt_file:
-                opt_file.write(message)
-                opt_file.write('\n')
-        except PermissionError as error:
-            print("permission error {}".format(error))
-            pass
+        # save to the disk (rank 0 only — avoids racing writers under DDP)
+        if udist.is_main():
+            expr_dir = os.path.join(opt.checkpoints_dir, opt.name)
+            util.mkdirs(expr_dir)
+            file_name = os.path.join(expr_dir, '{}_opt.txt'.format(opt.phase))
+            try:
+                with open(file_name, 'wt') as opt_file:
+                    opt_file.write(message)
+                    opt_file.write('\n')
+            except PermissionError as error:
+                print("permission error {}".format(error))
+                pass
 
     def parse(self):
         """Parse our options, create checkpoints directory suffix, and set up gpu device."""
@@ -160,17 +163,23 @@ class BaseOptions():
             suffix = ('_' + opt.suffix.format(**vars(opt))) if opt.suffix != '' else ''
             opt.name = opt.name + suffix
 
-        self.print_options(opt)
+        # Under torchrun (WORLD_SIZE > 1) initialize the process group and
+        # bind this process to its LOCAL_RANK device. Override the cmdline
+        # --gpu_ids so all downstream code uses this rank's single device.
+        if udist.is_ddp():
+            udist.init_process_group()
+            opt.gpu_ids = [udist.get_local_rank()] if torch.cuda.is_available() else []
+        else:
+            str_ids = opt.gpu_ids.split(',')
+            opt.gpu_ids = []
+            for str_id in str_ids:
+                id = int(str_id)
+                if id >= 0:
+                    opt.gpu_ids.append(id)
+            if len(opt.gpu_ids) > 0:
+                torch.cuda.set_device(opt.gpu_ids[0])
 
-        # set gpu ids
-        str_ids = opt.gpu_ids.split(',')
-        opt.gpu_ids = []
-        for str_id in str_ids:
-            id = int(str_id)
-            if id >= 0:
-                opt.gpu_ids.append(id)
-        if len(opt.gpu_ids) > 0:
-            torch.cuda.set_device(opt.gpu_ids[0])
+        self.print_options(opt)
 
         self.opt = opt
         return self.opt
