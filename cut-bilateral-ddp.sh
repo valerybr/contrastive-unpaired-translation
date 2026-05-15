@@ -33,7 +33,7 @@ RUN_NAME=vindr_bilateral_ddp2
 # nproc_per_node should match the number of GPUs requested above.
 # --batch_size below is PER-RANK; effective global batch = batch_size * nproc_per_node.
 # --gpu_ids is ignored under torchrun (each rank binds to its LOCAL_RANK device).
-torchrun --standalone --nnodes=1 --nproc_per_node=4 train.py \
+torchrun --standalone --nnodes=1 --nproc_per_node=8 train.py \
   --dataroot /home/management/projects/gilba/valeryb/data/vindr/images \
   --annotations_csv /home/management/projects/gilba/valeryb/data/vindr/finding_annotations.csv \
   --split training \

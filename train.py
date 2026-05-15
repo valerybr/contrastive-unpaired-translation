@@ -29,7 +29,12 @@ if __name__ == '__main__':
 
     visualizer = Visualizer(opt)   # create a visualizer that display/save images and plots
     opt.visualizer = visualizer
-    total_iters = 0                # the total number of training iterations
+    # On --continue_train, align the wandb x-axis with global progress by
+    # reconstructing total_iters from the resumed epoch. Per-rank total_iters
+    # advances over each rank's DistributedSampler shard, so divide by world
+    # size. Assumes the previous run stopped at an epoch boundary (the usual
+    # case via save_epoch_freq).
+    total_iters = (opt.epoch_count - 1) * dataset_size // udist.get_world_size() if opt.continue_train else 0
 
     optimize_time = 0.1
 

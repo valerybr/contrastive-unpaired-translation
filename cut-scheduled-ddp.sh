@@ -1,7 +1,7 @@
 #!/bin/bash
-#SBATCH --job-name=cut_unpaired_ddp
-#SBATCH --output=/home/valeryb/logs/cut_unpaired_ddp.out
-#SBATCH --error=/home/valeryb/logs/cut_unpaired_ddp.err
+#SBATCH --job-name=cut_scheduled_ddp
+#SBATCH --output=/home/valeryb/logs/cut_scheduled_ddp.out
+#SBATCH --error=/home/valeryb/logs/cut_scheduled_ddp.err
 #SBATCH --partition=gpu-rtx
 #SBATCH --gres=gpu:rtx6000:8
 #SBATCH --ntasks=1
@@ -12,7 +12,7 @@
 
 source /home/valeryb/.bashrc
 conda activate mgdetect
-cd /home/valeryb/contrastive-unpaired-translation
+cd /home/valeryb/contrastive-bilateral-translation
 
 # wandb auth: set WANDB_API_KEY in ~/.bashrc or export it here.
 # Compute nodes may not see ~/.netrc, so prefer the env var.
@@ -28,7 +28,12 @@ export TORCH_NCCL_BLOCKING_WAIT=1
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 export TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC=1800
 
-RUN_NAME=vindr_unpaired_bilateral_ddp2
+RUN_NAME=vindr_scheduled_ddp
+
+# Curriculum: start at 50% random pairing, ramp down to 0% (fully paired)
+# over the first 80 epochs. Past the schedule, p holds at the last value
+# (0.0), so the remaining epochs train as a paired dataset.
+PAIR_SCHEDULE="50:0.8,50:0.7,50:0.6,50:0.5,50:0.3,50:0.1,100:0.0"
 
 # nproc_per_node should match the number of GPUs requested above.
 # --batch_size below is PER-RANK; effective global batch = batch_size * nproc_per_node.
@@ -40,12 +45,15 @@ torchrun --standalone --nnodes=1 --nproc_per_node=8 train.py \
   --flip_right \
   --name $RUN_NAME \
   --CUT_mode CUT \
-  --dataset_mode unpaired_bilateral \
+  --dataset_mode scheduled_bilateral \
+  --pair_schedule "$PAIR_SCHEDULE" \
+  --pair_schedule_seed 0 \
   --batch_size 1 \
   --num_threads 4 \
   --display_id 0 \
   --checkpoints_dir /home/management/projects/gilba/valeryb/cut_checkpoints \
   --use_wandb \
   --wandb_project cut-vindr \
-  --wandb_run_name $RUN_NAME  --continue_train --epoch 250 --epoch_count 251
+  --wandb_run_name $RUN_NAME
+
 #  --continue_train --epoch 251 --epoch_count 252
