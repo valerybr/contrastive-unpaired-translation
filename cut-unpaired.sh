@@ -6,7 +6,7 @@
 #SBATCH --gres=gpu:rtx6000:2
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=32G
+#SBATCH --mem=24G
 #SBATCH --time=24:00:00
 
 
@@ -14,17 +14,15 @@ source /home/valeryb/.bashrc
 conda activate mgdetect
 cd /home/valeryb/contrastive-unpaired-translation
 
-# wandb auth: set WANDB_API_KEY in ~/.bashrc or export it here.
-# Compute nodes may not see ~/.netrc, so prefer the env var.
-export WANDB_API_KEY="${WANDB_API_KEY:?WANDB_API_KEY is not set; export it before sbatch}"
 
+RUN_NAME=vindr_unpaired_bilateral_cut1
 
 python train.py \
   --dataroot /home/management/projects/gilba/valeryb/data/vindr/images \
   --annotations_csv /home/management/projects/gilba/valeryb/data/vindr/finding_annotations.csv \
   --split training \
   --flip_right \
-  --name vindr_unpaired_bilateral_CUT \
+  --name $RUN_NAME \
   --CUT_mode CUT \
   --dataset_mode unpaired_bilateral \
   --gpu_ids 0,1 \
@@ -34,7 +32,7 @@ python train.py \
   --checkpoints_dir /home/management/projects/gilba/valeryb/cut_checkpoints \
   --use_wandb \
   --wandb_project cut-vindr \
-  --wandb_run_name vindr_unpaired_bilateral_cut1
+  --wandb_run_name  $RUN_NAME
   #\
   #--continue_train --epoch 60 --epoch_count 61
 
