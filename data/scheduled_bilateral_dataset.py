@@ -82,6 +82,7 @@ class ScheduledBilateralDataset(BaseDataset):
         return len(self.inner)
 
     def __getitem__(self, index):
-        a, b = self.inner[index]
-        l_path, r_path = self.inner.pairs[index]
+        # r_path is the actually-resolved right image (the random pick under the
+        # schedule, not necessarily the true pair), so B_paths labels B correctly.
+        a, b, l_path, r_path = self.inner[index]
         return {'A': a, 'B': b, 'A_paths': str(l_path), 'B_paths': str(r_path)}

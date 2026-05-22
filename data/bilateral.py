@@ -367,7 +367,9 @@ class ScheduledBilateralDataset(Dataset):
     def __len__(self) -> int:
         return len(self.pairs)
 
-    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
+    def __getitem__(
+        self, idx: int
+    ) -> tuple[torch.Tensor, torch.Tensor, Path, Path]:
         l_path, r_path = self.pairs[idx]
 
         rng = random.Random(f"{self.seed}:{self.epoch}:{idx}")
@@ -379,7 +381,9 @@ class ScheduledBilateralDataset(Dataset):
 
         img_l = self._load(l_path, flip=False)
         img_r = self._load(r_path, flip=self.flip_right)
-        return img_l, img_r
+        # Return the actually-resolved right path so callers can report which
+        # right image B holds — under random pairing it differs from pairs[idx].
+        return img_l, img_r, l_path, r_path
 
     def _load(self, path: Path, flip: bool) -> torch.Tensor:
         img = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)

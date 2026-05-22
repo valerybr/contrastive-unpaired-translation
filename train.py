@@ -29,11 +29,13 @@ if __name__ == '__main__':
 
     visualizer = Visualizer(opt)   # create a visualizer that display/save images and plots
     opt.visualizer = visualizer
-    # On --continue_train, align the wandb x-axis with global progress by
-    # reconstructing total_iters from the resumed epoch. Per-rank total_iters
-    # advances over each rank's DistributedSampler shard, so divide by world
-    # size. Assumes the previous run stopped at an epoch boundary (the usual
-    # case via save_epoch_freq).
+    # On --continue_train, reconstruct total_iters from the resumed epoch so the
+    # display/print/save frequency gates (the total_iters % *_freq checks below)
+    # stay phased across the resume. Per-rank total_iters advances over each
+    # rank's DistributedSampler shard, so divide by world size. Assumes the
+    # previous run stopped at an epoch boundary (the usual case via
+    # save_epoch_freq). The wandb x-axis is driven by the logged 'epoch' value,
+    # not total_iters.
     total_iters = (opt.epoch_count - 1) * dataset_size // udist.get_world_size() if opt.continue_train else 0
 
     optimize_time = 0.1
@@ -94,13 +96,13 @@ if __name__ == '__main__':
             if total_iters % opt.display_freq == 0:   # display images on visdom and save images to a HTML file
                 save_result = total_iters % opt.update_html_freq == 0
                 model.compute_visuals()
-                visualizer.display_current_results(model.get_current_visuals(), epoch, save_result, step=total_iters)
+                visualizer.display_current_results(model.get_current_visuals(), epoch, save_result)
 
             if total_iters % opt.print_freq == 0:    # print training losses and save logging information to the disk
                 losses = model.get_current_losses()
                 visualizer.print_current_losses(epoch, epoch_iter, losses, optimize_time, t_data)
                 if opt.display_id is None or opt.display_id > 0 or getattr(opt, 'use_wandb', False):
-                    visualizer.plot_current_losses(epoch, float(epoch_iter) / dataset_size, losses, step=total_iters)
+                    visualizer.plot_current_losses(epoch, float(epoch_iter) / dataset_size, losses)
 
             if total_iters % opt.save_latest_freq == 0:   # cache our latest model every <save_latest_freq> iterations
                 if udist.is_main():
@@ -133,7 +135,7 @@ if __name__ == '__main__':
         if udist.is_main():
             print('End of epoch %d / %d \t Time Taken: %d sec' % (epoch, opt.n_epochs + opt.n_epochs_decay, time.time() - epoch_start_time))
         lr = model.update_learning_rate()                # update learning rates at the end of every epoch.
-        visualizer.log_epoch_averages(epoch, avg_losses, lr=lr, step=total_iters)
+        visualizer.log_epoch_averages(epoch, avg_losses, lr=lr)
 
     visualizer.finish()
     udist.cleanup()

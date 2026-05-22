@@ -93,15 +93,26 @@ class Visualizer():
 
         if self.use_wandb:
             import wandb
+            import hashlib
             self.wandb = wandb
+            # Stable run id derived from the run name so retries/--continue_train
+            # land in the same wandb run instead of creating a new one each launch.
+            run_name = opt.wandb_run_name or opt.name
+            run_id = hashlib.sha1(run_name.encode('utf-8')).hexdigest()[:16]
             self.wandb_run = wandb.init(
                 project=opt.wandb_project,
                 entity=opt.wandb_entity,
-                name=opt.wandb_run_name or opt.name,
+                id=run_id,
+                name=run_name,
                 config=vars(opt),
                 dir=os.path.join(opt.checkpoints_dir, opt.name),
                 resume='allow',
             )
+            # Plot every metric against epoch (fractional within an epoch) rather
+            # than wandb's internal step counter, which otherwise tracks the
+            # number of images seen. Each log call carries an 'epoch' value.
+            self.wandb.define_metric('epoch')
+            self.wandb.define_metric('*', step_metric='epoch')
 
         if self.use_html:  # create an HTML object at <checkpoints_dir>/web/; images will be saved under <checkpoints_dir>/web/images/
             self.web_dir = os.path.join(opt.checkpoints_dir, opt.name, 'web')
@@ -126,14 +137,13 @@ class Visualizer():
         print('Command: %s' % cmd)
         Popen(cmd, shell=True, stdout=PIPE, stderr=PIPE)
 
-    def display_current_results(self, visuals, epoch, save_result, step=None):
+    def display_current_results(self, visuals, epoch, save_result):
         """Display current results on visdom; save current results to an HTML file.
 
         Parameters:
             visuals (OrderedDict) - - dictionary of images to display or save
             epoch (int) - - the current epoch
             save_result (bool) - - if save the current results to an HTML file
-            step (int) - - global iteration step, used as wandb x-axis
         """
         if not self.is_main:
             return
@@ -218,16 +228,15 @@ class Visualizer():
             log_payload = {'epoch': epoch}
             for label, image in visuals.items():
                 log_payload['images/%s' % label] = self.wandb.Image(util.tensor2im(image), caption=label)
-            self.wandb.log(log_payload, step=step)
+            self.wandb.log(log_payload)
 
-    def plot_current_losses(self, epoch, counter_ratio, losses, step=None):
+    def plot_current_losses(self, epoch, counter_ratio, losses):
         """display the current losses on visdom display: dictionary of error labels and values
 
         Parameters:
             epoch (int)           -- current epoch
             counter_ratio (float) -- progress (percentage) in the current epoch, between 0 to 1
             losses (OrderedDict)  -- training losses stored in the format of (name, float) pairs
-            step (int)            -- global iteration step, used as wandb x-axis
         """
         if len(losses) == 0 or not self.is_main:
             return
@@ -259,9 +268,9 @@ class Visualizer():
         if self.use_wandb:
             payload = {'train/%s' % k: v for k, v in losses.items()}
             payload['epoch'] = epoch + counter_ratio
-            self.wandb.log(payload, step=step)
+            self.wandb.log(payload)
 
-    def log_epoch_averages(self, epoch, avg_losses, lr=None, step=None):
+    def log_epoch_averages(self, epoch, avg_losses, lr=None):
         """Log per-epoch averaged losses (and optionally LR) to wandb."""
         if not self.use_wandb:
             return
@@ -269,7 +278,7 @@ class Visualizer():
         payload['epoch'] = epoch
         if lr is not None:
             payload['train/lr'] = lr
-        self.wandb.log(payload, step=step)
+        self.wandb.log(payload)
 
     def watch_model(self, model):
         """Optional: track gradients/parameters of the GAN networks."""
