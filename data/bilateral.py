@@ -10,6 +10,53 @@ import torch
 from torch.utils.data import Dataset
 
 
+def _validate_crop_width(crop_width: int | None, width: int) -> int | None:
+    """Validate ``crop_width`` against the resized image width; return unchanged.
+
+    A falsy value (``0``/``None``) disables cropping. When set, it must be a
+    multiple of 4 (the ResNet generator requires sizes divisible by 4) and no
+    wider than the image it will be cropped from.
+    """
+    if crop_width:
+        if crop_width % 4 != 0:
+            raise ValueError(f"crop_width must be a multiple of 4, got {crop_width}")
+        if crop_width > width:
+            raise ValueError(
+                f"crop_width ({crop_width}) must be <= image width ({width})"
+            )
+    return crop_width
+
+
+def _load_image(
+    path: Path,
+    img_size: tuple[int, int],
+    flip: bool,
+    crop_width: int | None,
+) -> torch.Tensor:
+    """Read a grayscale PNG → resize → optional flip → crop width → tensor.
+
+    Returns a ``[1, H, W]`` float32 tensor in ``[-1, 1]``. The crop is applied
+    **after** the flip and keeps the rightmost ``crop_width`` columns — the
+    chest-wall side once right breasts are flipped to match left orientation —
+    dropping the left/nipple edge. Disabled when ``crop_width`` is falsy or
+    already >= the resized width.
+    """
+    img = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+    if img is None:
+        raise FileNotFoundError(f"Cannot read image: {path}")
+    target_h, target_w = img_size
+    if img.shape[0] != target_h or img.shape[1] != target_w:
+        img = cv2.resize(img, (target_w, target_h),  # cv2 takes (width, height)
+                         interpolation=cv2.INTER_LINEAR)
+    if flip:
+        img = cv2.flip(img, 1)
+    if crop_width and crop_width < img.shape[1]:
+        img = img[:, img.shape[1] - crop_width:]  # keep chest-wall (right) cols
+    # [0, 255] uint8 → [-1, 1] float32, shape [1, H, W]
+    tensor = torch.from_numpy(img.astype(np.float32)) / 127.5 - 1.0
+    return tensor.unsqueeze(0)
+
+
 class BilateralDataset(Dataset):
     """Paired left/right CC mammogram dataset built from VinDr-Mammo annotations.
 
@@ -41,12 +88,14 @@ class BilateralDataset(Dataset):
         split: str | None = None,
         img_size: int | tuple[int, int] = 512,
         flip_right: bool = False,
+        crop_width: int | None = 360,
     ):
         self.data_root = Path(data_root)
         self.img_size: tuple[int, int] = (
             (img_size, img_size) if isinstance(img_size, int) else tuple(img_size)  # type: ignore[arg-type]
         )
         self.flip_right = flip_right
+        self.crop_width = _validate_crop_width(crop_width, self.img_size[1])
 
         self.pairs = self._build_pairs(Path(annotations_csv), split)
 
@@ -126,18 +175,7 @@ class BilateralDataset(Dataset):
         return img_l, img_r
 
     def _load(self, path: Path, flip: bool) -> torch.Tensor:
-        img = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
-        if img is None:
-            raise FileNotFoundError(f"Cannot read image: {path}")
-        target_h, target_w = self.img_size
-        if img.shape[0] != target_h or img.shape[1] != target_w:
-            img = cv2.resize(img, (target_w, target_h),  # cv2 takes (width, height)
-                             interpolation=cv2.INTER_LINEAR)
-        if flip:
-            img = cv2.flip(img, 1)
-        # [0, 255] uint8 → [-1, 1] float32, shape [1, H, W]
-        tensor = torch.from_numpy(img.astype(np.float32)) / 127.5 - 1.0
-        return tensor.unsqueeze(0)
+        return _load_image(path, self.img_size, flip, self.crop_width)
 
 
 class UnpairedBilateralDataset(Dataset):
@@ -169,12 +207,14 @@ class UnpairedBilateralDataset(Dataset):
         split: str | None = None,
         img_size: int | tuple[int, int] = 512,
         flip_right: bool = False,
+        crop_width: int | None = 360,
     ):
         self.data_root = Path(data_root)
         self.img_size: tuple[int, int] = (
             (img_size, img_size) if isinstance(img_size, int) else tuple(img_size)  # type: ignore[arg-type]
         )
         self.flip_right = flip_right
+        self.crop_width = _validate_crop_width(crop_width, self.img_size[1])
 
         self.left_images, self.right_images = self._build_pools(
             Path(annotations_csv), split
@@ -247,17 +287,7 @@ class UnpairedBilateralDataset(Dataset):
         return img_l, img_r
 
     def _load(self, path: Path, flip: bool) -> torch.Tensor:
-        img = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
-        if img is None:
-            raise FileNotFoundError(f"Cannot read image: {path}")
-        target_h, target_w = self.img_size
-        if img.shape[0] != target_h or img.shape[1] != target_w:
-            img = cv2.resize(img, (target_w, target_h),  # cv2 takes (width, height)
-                             interpolation=cv2.INTER_LINEAR)
-        if flip:
-            img = cv2.flip(img, 1)
-        tensor = torch.from_numpy(img.astype(np.float32)) / 127.5 - 1.0
-        return tensor.unsqueeze(0)
+        return _load_image(path, self.img_size, flip, self.crop_width)
 
 
 class ScheduledBilateralDataset(Dataset):
@@ -292,12 +322,14 @@ class ScheduledBilateralDataset(Dataset):
         img_size: int | tuple[int, int] = 512,
         flip_right: bool = False,
         seed: int = 0,
+        crop_width: int | None = 360,
     ):
         self.data_root = Path(data_root)
         self.img_size: tuple[int, int] = (
             (img_size, img_size) if isinstance(img_size, int) else tuple(img_size)  # type: ignore[arg-type]
         )
         self.flip_right = flip_right
+        self.crop_width = _validate_crop_width(crop_width, self.img_size[1])
         self.seed = seed
         self.epoch: int = 0
         self.p: float = 0.0
@@ -386,14 +418,4 @@ class ScheduledBilateralDataset(Dataset):
         return img_l, img_r, l_path, r_path
 
     def _load(self, path: Path, flip: bool) -> torch.Tensor:
-        img = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
-        if img is None:
-            raise FileNotFoundError(f"Cannot read image: {path}")
-        target_h, target_w = self.img_size
-        if img.shape[0] != target_h or img.shape[1] != target_w:
-            img = cv2.resize(img, (target_w, target_h),  # cv2 takes (width, height)
-                             interpolation=cv2.INTER_LINEAR)
-        if flip:
-            img = cv2.flip(img, 1)
-        tensor = torch.from_numpy(img.astype(np.float32)) / 127.5 - 1.0
-        return tensor.unsqueeze(0)
+        return _load_image(path, self.img_size, flip, self.crop_width)

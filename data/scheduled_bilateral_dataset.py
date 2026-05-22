@@ -35,6 +35,11 @@ class ScheduledBilateralDataset(BaseDataset):
         parser.add_argument('--bilateral_size', type=int, nargs=2,
                             default=(512, 384), metavar=('H', 'W'),
                             help='Output image size as H W (must be multiples of 4)')
+        parser.add_argument('--crop_width', type=int, default=360,
+                            help='Crop output width to this many px after flip, '
+                                 'keeping the chest-wall (right) edge. Must be a '
+                                 'multiple of 4 and <= bilateral_size width. '
+                                 '0 disables cropping.')
         parser.add_argument('--pair_schedule', type=str, default='',
                             help='Random-pair probability schedule as '
                                  '"epochs:p,epochs:p,..." e.g. '
@@ -56,6 +61,7 @@ class ScheduledBilateralDataset(BaseDataset):
             img_size=tuple(opt.bilateral_size),
             flip_right=opt.flip_right,
             seed=opt.pair_schedule_seed,
+            crop_width=opt.crop_width,
         )
         BaseDataset.__init__(self, opt)
 
