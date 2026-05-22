@@ -25,6 +25,7 @@ DATAROOT="${DATAROOT:-/home/management/projects/gilba/valeryb/data/vindr/images}
 ANNOTATIONS_CSV="${ANNOTATIONS_CSV:-/home/management/projects/gilba/valeryb/data/vindr/finding_annotations.csv}"
 PAIRED_NAME="${PAIRED_NAME:-vindr_bilateral_ddp2}"
 UNPAIRED_NAME="${UNPAIRED_NAME:-vindr_unpaired_bilateral_ddp2}"
+SCHEDULED_NAME="${SCHEDULED_NAME:-vindr_scheduled_ddp}"
 SPLIT="${SPLIT:-test}"
 EPOCH="${EPOCH:-latest}"
 NUM_TEST="${NUM_TEST:-200}"
@@ -50,7 +51,8 @@ run_test() {
     --bilateral_size ${BILATERAL_SIZE}
 }
 
-run_test bilateral          "${PAIRED_NAME}"
-run_test unpaired_bilateral "${UNPAIRED_NAME}"
+#run_test bilateral          "${PAIRED_NAME}"
+#run_test unpaired_bilateral "${UNPAIRED_NAME}"
+run_test scheduled_bilateral "${SCHEDULED_NAME}"
 
-echo "Results written under ${RESULTS_DIR}/{${PAIRED_NAME},${UNPAIRED_NAME}}/test_${EPOCH}/"
+echo "Results written under ${RESULTS_DIR}/{${PAIRED_NAME},${UNPAIRED_NAME},${SCHEDULED_NAME}}/test_${EPOCH}/"

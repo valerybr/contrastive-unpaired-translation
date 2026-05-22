@@ -12,7 +12,7 @@
 
 source /home/valeryb/.bashrc
 conda activate mgdetect
-cd /home/valeryb/contrastive-bilateral-translation
+cd /home/valeryb/contrastive-unpaired-translation
 
 # wandb auth: set WANDB_API_KEY in ~/.bashrc or export it here.
 # Compute nodes may not see ~/.netrc, so prefer the env var.
