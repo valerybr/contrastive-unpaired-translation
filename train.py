@@ -52,8 +52,13 @@ if __name__ == '__main__':
         epoch_loss_count = 0
         for i, data in enumerate(dataset):  # inner loop within one epoch
             iter_start_time = time.time()  # timer for computation per iteration
-            if total_iters % opt.print_freq == 0:
-                t_data = iter_start_time - iter_data_time
+            # Data-loading time for this iteration. Computed every step (not
+            # guarded on total_iters): the print block below tests total_iters
+            # *after* it is incremented, so a pre-increment guard left t_data
+            # unbound when resuming — total_iters starts non-zero under
+            # --continue_train, so the first print boundary could be hit before
+            # the guard ever fired. The subtraction is cheap; just always set it.
+            t_data = iter_start_time - iter_data_time
 
             batch_size = data["A"].size(0)
             total_iters += batch_size
