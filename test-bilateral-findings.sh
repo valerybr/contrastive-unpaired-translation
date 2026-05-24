@@ -34,9 +34,9 @@ cd /home/valeryb/contrastive-unpaired-translation
 
 DATAROOT="${DATAROOT:-/home/management/projects/gilba/valeryb/data/vindr/images}"
 ANNOTATIONS_CSV="${ANNOTATIONS_CSV:-/home/management/projects/gilba/valeryb/data/vindr/finding_annotations.csv}"
-NAME1="${NAME1:-vindr_bilateral_ddp2}"
-NAME2="${NAME2:-vindr_unpaired_bilateral_ddp2}"
-NAME3="${NAME3:-vindr_scheduled_ddp}"
+NAME1="${PAIRED_NAME:-vindr_scheduled_ddp_g1}"
+NAME2="${UNPAIRED_NAME:-vindr_scheduled_ddp_g3}"
+NAME3="${SCHEDULED_NAME:-vindr_scheduled_ddp_g5}"
 SPLIT="${SPLIT:-test}"
 EPOCH="${EPOCH:-latest}"
 NUM_TEST="${NUM_TEST:-200}"
