@@ -29,6 +29,13 @@ class BilateralDataset(BaseDataset):
                                  'keeping the chest-wall (right) edge. Must be a '
                                  'multiple of 4 and <= bilateral_size width. '
                                  '0 disables cropping.')
+        parser.add_argument('--finding_filter', type=str, default='no_finding',
+                            choices=['no_finding', 'left_finding',
+                                     'right_finding', 'either_finding'],
+                            help='Which CC pairs to keep by finding label: '
+                                 'no_finding (default, all-normal studies) or '
+                                 'left/right/either_finding (the named CC '
+                                 'image(s) carry a finding).')
         parser.set_defaults(input_nc=1, output_nc=1, preprocess='none')
         return parser
 
@@ -41,6 +48,7 @@ class BilateralDataset(BaseDataset):
             img_size=tuple(opt.bilateral_size),
             flip_right=opt.flip_right,
             crop_width=opt.crop_width,
+            finding_filter=opt.finding_filter,
         )
 
     def __len__(self):

@@ -27,6 +27,25 @@ def _validate_crop_width(crop_width: int | None, width: int) -> int | None:
     return crop_width
 
 
+# Stringified label that VinDr-Mammo uses for an image with no finding.
+_NO_FINDING = {"['No Finding']"}
+
+# Which CC pairs a dataset keeps, by finding label:
+#   no_finding     - every row in the study is "No Finding" (default; normals).
+#   left_finding   - the LEFT CC image has a finding.
+#   right_finding  - the RIGHT CC image has a finding.
+#   either_finding - the LEFT or RIGHT CC image has a finding.
+FINDING_FILTERS = ("no_finding", "left_finding", "right_finding", "either_finding")
+
+
+def _validate_finding_filter(value: str) -> str:
+    if value not in FINDING_FILTERS:
+        raise ValueError(
+            f"finding_filter must be one of {FINDING_FILTERS}, got {value!r}"
+        )
+    return value
+
+
 def _load_image(
     path: Path,
     img_size: tuple[int, int],
@@ -60,9 +79,11 @@ def _load_image(
 class BilateralDataset(Dataset):
     """Paired left/right CC mammogram dataset built from VinDr-Mammo annotations.
 
-    Filters ``finding_annotations.csv`` to studies where **every** image is
-    labelled ``'No Finding'``, then pairs the L CC and R CC images for each
-    such study.
+    By default (``finding_filter='no_finding'``) filters
+    ``finding_annotations.csv`` to studies where **every** image is labelled
+    ``'No Finding'``, then pairs the L CC and R CC images for each such study.
+    Other ``finding_filter`` values instead keep pairs whose left / right /
+    either CC image carries a finding (see ``FINDING_FILTERS``).
 
     Expected PNG layout::
 
@@ -79,6 +100,8 @@ class BilateralDataset(Dataset):
                          faces left, matching the left-breast orientation.
                          Set to ``False`` if images were already flipped during
                          DICOM conversion (``--annotations`` flag in dicom_io).
+        finding_filter:  Which CC pairs to keep, one of ``FINDING_FILTERS``.
+                         Default ``'no_finding'`` (all-normal studies).
     """
 
     def __init__(
@@ -89,6 +112,7 @@ class BilateralDataset(Dataset):
         img_size: int | tuple[int, int] = 512,
         flip_right: bool = False,
         crop_width: int | None = 360,
+        finding_filter: str = "no_finding",
     ):
         self.data_root = Path(data_root)
         self.img_size: tuple[int, int] = (
@@ -96,6 +120,7 @@ class BilateralDataset(Dataset):
         )
         self.flip_right = flip_right
         self.crop_width = _validate_crop_width(crop_width, self.img_size[1])
+        self.finding_filter = _validate_finding_filter(finding_filter)
 
         self.pairs = self._build_pairs(Path(annotations_csv), split)
 
@@ -109,25 +134,30 @@ class BilateralDataset(Dataset):
         # --- pass 1: collect all rows, optionally filtered by split ----------
         # study_id → {(laterality, view_position) → image_id}
         studies: dict[str, dict[tuple[str, str], str]] = {}
-        # study_id → set of finding categories seen
+        # study_id → set of finding categories seen (study-level)
         findings: dict[str, set[str]] = {}
+        # (study_id, laterality, view) → set of finding categories (per-image)
+        image_findings: dict[tuple[str, str, str], set[str]] = {}
 
         with open(annotations_csv, newline="") as f:
             for row in csv.DictReader(f):
                 if split is not None and row["split"] != split:
                     continue
                 sid = row["study_id"]
-                findings.setdefault(sid, set()).add(row["finding_categories"])
                 key = (row["laterality"], row["view_position"])
+                findings.setdefault(sid, set()).add(row["finding_categories"])
                 studies.setdefault(sid, {})[key] = row["image_id"]
+                image_findings.setdefault((sid, *key), set()).add(
+                    row["finding_categories"]
+                )
 
-        # --- pass 2: keep only no-finding studies with both L CC and R CC ----
+        # --- pass 2: keep pairs with both L CC and R CC matching the filter --
         pairs: list[tuple[Path, Path]] = []
         skipped: list[tuple[str, str]] = []  # (study_id, reason)
 
         for sid, images in studies.items():
-            # Every row for this study must be "No Finding"
-            if findings[sid] != {"['No Finding']"}:
+            # `no_finding`: every row for this study must be "No Finding".
+            if self.finding_filter == "no_finding" and findings[sid] != _NO_FINDING:
                 continue
 
             l_id = images.get(("L", "CC"))
@@ -137,6 +167,18 @@ class BilateralDataset(Dataset):
                 missing = "L CC" if l_id is None else "R CC"
                 skipped.append((sid, f"missing {missing}"))
                 continue
+
+            # `*_finding` filters key on whether the CC image itself has a
+            # finding (a label other than "No Finding").
+            if self.finding_filter != "no_finding":
+                l_has = image_findings.get((sid, "L", "CC"), _NO_FINDING) != _NO_FINDING
+                r_has = image_findings.get((sid, "R", "CC"), _NO_FINDING) != _NO_FINDING
+                if self.finding_filter == "left_finding" and not l_has:
+                    continue
+                if self.finding_filter == "right_finding" and not r_has:
+                    continue
+                if self.finding_filter == "either_finding" and not (l_has or r_has):
+                    continue
 
             l_path = self.data_root / sid / f"{l_id}.png"
             r_path = self.data_root / sid / f"{r_id}.png"
@@ -158,6 +200,8 @@ class BilateralDataset(Dataset):
         print(
             f"[BilateralDataset] Loaded {len(pairs)} paired studies"
             + (f" (split={split})" if split else "")
+            + (f" [finding_filter={self.finding_filter}]"
+               if self.finding_filter != "no_finding" else "")
         )
         return pairs
 
