@@ -37,10 +37,17 @@
   }
   .card { background: #1a1a1a; border: 1px solid #2c2c2c; border-radius: 6px; padding: 8px; }
   .card h4 { margin: 0 0 6px; font: 11px/1.2 monospace; color: #777; word-break: break-all; }
-  .row { display: flex; gap: 4px; align-items: flex-start; }
-  .srcA { display: none; flex: 1 1 0; }
-  .srcA img { width: 100%; height: auto; display: block; border-radius: 3px; }
-  .srcA .cap { text-align: center; color: #666; font-size: 10px; padding-top: 2px; }
+  .row { display: flex; gap: 4px; align-items: stretch; }
+  /* real_A sits in a frame that stretches to the overlay box's height, so
+     real_A renders at exactly the same size as real_B / fake_B even when its
+     aspect ratio differs. object-fit: contain letterboxes rather than crops. */
+  .srcA { display: none; flex: 1 1 0; position: relative; line-height: 0;
+          background: #000; border-radius: 3px; overflow: hidden; }
+  .srcA img { width: 100%; height: 100%; object-fit: contain; display: block; }
+  .srcA .cap { position: absolute; bottom: 3px; left: 50%; transform: translateX(-50%);
+    font-size: 10px; padding: 1px 5px; background: rgba(0,0,0,.55); color: #fff;
+    border-radius: 3px; line-height: 1.2; }
+  body.no-labels .srcA .cap { display: none; }
   body.show-a .srcA { display: block; }
 
   .box { position: relative; flex: 1 1 0; line-height: 0; background: #000; border-radius: 3px; overflow: hidden; }
@@ -67,6 +74,9 @@
     position: static; width: 50%; height: auto;
     clip-path: none; opacity: 1; mix-blend-mode: normal;
   }
+  /* side-by-side splits the box into two 50%-width images; when real_A is also
+     shown, give the box twice the column width so all three render equal-width. */
+  body.show-a #grid[data-mode="sbs"] .box { flex: 2 1 0; }
 
   /* corner labels */
   .box .lbl { position: absolute; top: 3px; font-size: 10px; padding: 1px 5px;
