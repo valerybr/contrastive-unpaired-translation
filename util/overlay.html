@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>fake_B vs real_B overlay — vindr_scheduled_ddp</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: #111; color: #ddd;
+    font: 13px/1.4 system-ui, sans-serif;
+  }
+  header {
+    position: sticky; top: 0; z-index: 10;
+    background: #1b1b1b; border-bottom: 1px solid #333;
+    padding: 10px 14px; display: flex; flex-wrap: wrap;
+    gap: 14px 22px; align-items: center;
+  }
+  header .group { display: flex; align-items: center; gap: 8px; }
+  header .group > label.title { color: #888; font-size: 11px; text-transform: uppercase; letter-spacing: .5px; }
+  .modes button {
+    background: #2a2a2a; color: #ccc; border: 1px solid #444;
+    padding: 5px 11px; border-radius: 5px; cursor: pointer; font-size: 13px;
+  }
+  .modes button.active { background: #3a6ea5; border-color: #4f8bcb; color: #fff; }
+  input[type=range] { width: 150px; vertical-align: middle; }
+  .val { display: inline-block; min-width: 34px; text-align: right; color: #9cf; font-variant-numeric: tabular-nums; }
+  .ctl { display: none; align-items: center; gap: 8px; }
+  .ctl.show { display: flex; }
+  label.chk { display: flex; align-items: center; gap: 5px; cursor: pointer; }
+
+  #grid {
+    --w: 320px; --fade: 0.5; --swipe: 50; --diffgain: 1;
+    display: grid; gap: 16px; padding: 16px;
+    grid-template-columns: repeat(auto-fill, minmax(var(--w), 1fr));
+  }
+  .card { background: #1a1a1a; border: 1px solid #2c2c2c; border-radius: 6px; padding: 8px; }
+  .card h4 { margin: 0 0 6px; font: 11px/1.2 monospace; color: #777; word-break: break-all; }
+  .row { display: flex; gap: 4px; align-items: flex-start; }
+  .srcA { display: none; flex: 1 1 0; }
+  .srcA img { width: 100%; height: auto; display: block; border-radius: 3px; }
+  .srcA .cap { text-align: center; color: #666; font-size: 10px; padding-top: 2px; }
+  body.show-a .srcA { display: block; }
+
+  .box { position: relative; flex: 1 1 0; line-height: 0; background: #000; border-radius: 3px; overflow: hidden; }
+  .box img { display: block; width: 100%; height: auto; }
+  .box img.base { /* real_B */ }
+  body.flip-b .box img.base { transform: scaleX(-1); }
+  .box img.over { position: absolute; inset: 0; width: 100%; height: 100%; }
+
+  /* per-mode behaviour */
+  #grid[data-mode="fade"]  .box img.over { opacity: var(--fade); }
+  #grid[data-mode="swipe"] .box img.over { clip-path: inset(0 calc(100% - var(--swipe) * 1%) 0 0); }
+  #grid[data-mode="swipe"] .box::after {
+    content: ""; position: absolute; top: 0; bottom: 0;
+    left: calc(var(--swipe) * 1%); width: 2px; margin-left: -1px;
+    background: #4f8bcb; pointer-events: none;
+  }
+  #grid[data-mode="diff"] .box { filter: contrast(var(--diffgain)); }
+  #grid[data-mode="diff"] .box img.over { mix-blend-mode: difference; }
+  #grid[data-mode="flicker"] .box img.over { opacity: 0; transition: none; }
+  #grid[data-mode="flicker"].flick-fake .box img.over { opacity: 1; }
+  #grid[data-mode="sbs"] .box { display: flex; gap: 2px; background: transparent; }
+  #grid[data-mode="sbs"] .box img.base,
+  #grid[data-mode="sbs"] .box img.over {
+    position: static; width: 50%; height: auto;
+    clip-path: none; opacity: 1; mix-blend-mode: normal;
+  }
+
+  /* corner labels */
+  .box .lbl { position: absolute; top: 3px; font-size: 10px; padding: 1px 5px;
+    background: rgba(0,0,0,.55); color: #fff; border-radius: 3px; pointer-events: none; }
+  .box .lbl.l { left: 3px; }
+  .box .lbl.r { right: 3px; }
+  body.no-labels .box .lbl { display: none; }
+  #grid[data-mode="diff"] .box .lbl,
+  #grid[data-mode="flicker"] .box .lbl { display: none; }
+</style>
+</head>
+<body class="flip-b">
+<header>
+  <div class="group">
+    <label class="title">Folder</label>
+    <select id="folder" style="background:#2a2a2a;color:#ccc;border:1px solid #444;
+            padding:5px 8px;border-radius:5px;font-size:13px;max-width:420px"></select>
+  </div>
+
+  <div class="group modes">
+    <label class="title">Mode</label>
+    <button data-mode="fade" class="active">Fade</button>
+    <button data-mode="swipe">Swipe</button>
+    <button data-mode="diff">Difference</button>
+    <button data-mode="flicker">Flicker</button>
+    <button data-mode="sbs">Side&nbsp;by&nbsp;side</button>
+  </div>
+
+  <div class="group ctl show" id="ctl-blend">
+    <label class="title" id="blend-label">fake_B opacity</label>
+    <input type="range" id="blend" min="0" max="100" value="50">
+    <span class="val" id="blend-val">50</span>
+  </div>
+
+  <div class="group ctl" id="ctl-flick">
+    <label class="title">Flicker (ms)</label>
+    <input type="range" id="flick" min="100" max="1500" step="50" value="500">
+    <span class="val" id="flick-val">500</span>
+  </div>
+
+  <div class="group ctl" id="ctl-diff">
+    <label class="title">Diff gain</label>
+    <input type="range" id="diffgain" min="100" max="600" value="100">
+    <span class="val" id="diffgain-val">1.0×</span>
+  </div>
+
+  <div class="group">
+    <label class="title">Size</label>
+    <input type="range" id="size" min="180" max="560" step="20" value="320">
+  </div>
+
+  <div class="group">
+    <label class="chk"><input type="checkbox" id="flipb" checked> flip real_B</label>
+    <label class="chk"><input type="checkbox" id="showa"> show real_A</label>
+    <label class="chk"><input type="checkbox" id="labels" checked> labels</label>
+  </div>
+
+  <div class="group"><span class="val" id="count" style="color:#888"></span></div>
+</header>
+
+<div id="grid" data-mode="fade"></div>
+
+<script>
+const grid = document.getElementById('grid');
+const countEl = document.getElementById('count');
+const folderSel = document.getElementById('folder');
+
+// Everything is discovered at runtime by parsing the directory autoindex
+// (the <a href> links Python's http.server emits). Works when results/ is
+// served over HTTP, e.g.
+//   cd results && python -m http.server 8000   ->  http://localhost:8000/overlay.html
+//
+// A "result folder" is any directory that has an images/ subfolder; inside it
+// the three views (real_A / fake_B / real_B) share identical filenames, so
+// listing images/real_B/ is enough to enumerate the samples.
+
+// Parse one HTML page (an autoindex, or a CUT-generated index.html if the
+// folder has one) into: subdir basenames, file basenames, and the raw relative
+// hrefs with their path kept. The raw hrefs matter because a results page's
+// links look like images/real_B/<id>.png — there is no images/ subdir link to
+// key off, so result folders are detected from that path prefix instead.
+async function listEntries(dir) {
+  const res = await fetch(dir || './', { headers: { Accept: 'text/html' } });
+  if (!res.ok) throw new Error(`HTTP ${res.status} for ${dir || './'}`);
+  const html = await res.text();
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  const dirs = [], files = [], hrefs = [];
+  for (const a of doc.querySelectorAll('a[href]')) {
+    const raw = a.getAttribute('href') || '';
+    if (!raw || raw.startsWith('?') || raw.startsWith('#') ||
+        raw.startsWith('/') || raw.includes('://') ||
+        raw === '../' || raw === './') continue;
+    const clean = decodeURIComponent(raw.split('?')[0].split('#')[0]);
+    if (clean === '..' || clean === '.') continue;
+    hrefs.push(clean);
+    const name = clean.split('/').filter(Boolean).pop() || '';
+    if (!name) continue;
+    (clean.endsWith('/') ? dirs : files).push(name);
+  }
+  return { dirs, files, hrefs };
+}
+
+// Image filenames inside a folder's images/<view>/ directory.
+async function listImages(dir) {
+  const { files } = await listEntries(dir);
+  const names = files.filter(n => /\.(png|jpe?g|webp)$/i.test(n));
+  return [...new Set(names)].sort();
+}
+
+// BFS the served tree for result folders. A folder qualifies if it has an
+// images/ subdir (plain autoindex) or its page links into images/... (a CUT
+// index.html). We fetch only directory pages (never the 200-file image
+// folders) and stop descending as soon as a folder qualifies. Returns base
+// paths ending in '/' (or '' if the served root itself holds images/).
+async function discoverFolders(root = '', maxDepth = 4) {
+  const found = [];
+  const queue = [{ path: root, depth: 0 }];
+  while (queue.length) {
+    const { path, depth } = queue.shift();
+    let entries;
+    try { entries = await listEntries(path); } catch { continue; }
+    const hasImages = entries.dirs.includes('images') ||
+                      entries.hrefs.some(h => /^images\//i.test(h));
+    if (hasImages) { found.push(path); continue; }
+    if (depth < maxDepth) {
+      for (const d of entries.dirs) queue.push({ path: path + d + '/', depth: depth + 1 });
+    }
+  }
+  return found.sort();
+}
+
+function buildCards(files, base) {
+  const frag = document.createDocumentFragment();
+  for (const f of files) {
+    const card = document.createElement('div');
+    card.className = 'card';
+    card.innerHTML = `
+      <h4>${f.replace(/\.[^.]+$/, '')}</h4>
+      <div class="row">
+        <div class="srcA">
+          <img loading="lazy" src="${base}images/real_A/${f}" alt="real_A">
+          <div class="cap">real_A</div>
+        </div>
+        <div class="box">
+          <img class="base" loading="lazy" src="${base}images/real_B/${f}" alt="real_B">
+          <img class="over" loading="lazy" src="${base}images/fake_B/${f}" alt="fake_B">
+          <span class="lbl l">fake_B</span>
+          <span class="lbl r">real_B</span>
+        </div>
+      </div>`;
+    frag.appendChild(card);
+  }
+  grid.appendChild(frag);
+  countEl.textContent = files.length + ' images';
+}
+
+function showLoadError(err, base) {
+  countEl.textContent = '';
+  grid.removeAttribute('data-mode');
+  grid.style.display = 'block';
+  const where = base != null ? `<code>${base}images/real_B/</code>` : 'the result folders';
+  grid.innerHTML = `
+    <div style="max-width:640px;margin:40px auto;padding:20px;
+                background:#241a1a;border:1px solid #5a2a2a;border-radius:8px;color:#e6c0c0">
+      <h3 style="margin-top:0;color:#ff9a9a">Couldn't list ${where}</h3>
+      <p>The viewer reads its folder/file lists from the directory autoindex at runtime,
+         which needs <code>results/</code> served over HTTP (browsers block directory reads
+         over <code>file://</code>). From the <code>results/</code> directory run:</p>
+      <pre style="background:#000;padding:10px;border-radius:5px;overflow:auto">python -m http.server 8000</pre>
+      <p>then open <code>http://localhost:8000/overlay.html</code>. A result folder is any
+         directory with an <code>images/</code> subfolder (<code>real_A</code> /
+         <code>real_B</code> / <code>fake_B</code>).</p>
+      <p style="color:#a88">Details: ${String(err)}</p>
+    </div>`;
+}
+
+async function loadFolder(base) {
+  grid.innerHTML = '';
+  grid.style.display = '';
+  grid.dataset.mode = mode;
+  countEl.textContent = 'loading…';
+  try {
+    const files = await listImages(base + 'images/real_B/');
+    if (!files.length) throw new Error('no image files found in ' + base + 'images/real_B/');
+    buildCards(files, base);
+  } catch (err) {
+    showLoadError(err, base);
+  }
+}
+
+(async () => {
+  let folders;
+  try {
+    folders = await discoverFolders('', 4);
+  } catch (err) {
+    showLoadError(err, null);
+    return;
+  }
+  if (!folders.length) {
+    showLoadError(new Error('no folders with an images/ subfolder were found'), null);
+    return;
+  }
+  folderSel.innerHTML = folders
+    .map(p => `<option value="${p}">${p.replace(/\/$/, '') || '.'}</option>`)
+    .join('');
+  folderSel.addEventListener('change', () => loadFolder(folderSel.value));
+  loadFolder(folders[0]);
+})();
+
+// ---- controls ----
+const blend = document.getElementById('blend');
+const blendVal = document.getElementById('blend-val');
+const blendLabel = document.getElementById('blend-label');
+const flick = document.getElementById('flick');
+const flickVal = document.getElementById('flick-val');
+const diffgain = document.getElementById('diffgain');
+const diffgainVal = document.getElementById('diffgain-val');
+const size = document.getElementById('size');
+
+const ctlBlend = document.getElementById('ctl-blend');
+const ctlFlick = document.getElementById('ctl-flick');
+const ctlDiff  = document.getElementById('ctl-diff');
+
+let mode = 'fade';
+let fadeVal = 50;   // remembered separately per slider use
+let swipeVal = 50;
+let flickTimer = null;
+
+function applyBlend() {
+  if (mode === 'swipe') {
+    grid.style.setProperty('--swipe', swipeVal);
+    blendVal.textContent = swipeVal;
+  } else { // fade
+    grid.style.setProperty('--fade', (fadeVal / 100).toFixed(2));
+    blendVal.textContent = fadeVal;
+  }
+}
+
+function startFlicker() {
+  stopFlicker();
+  flickTimer = setInterval(() => grid.classList.toggle('flick-fake'),
+                           parseInt(flick.value, 10));
+}
+function stopFlicker() {
+  if (flickTimer) { clearInterval(flickTimer); flickTimer = null; }
+  grid.classList.remove('flick-fake');
+}
+
+function setMode(m) {
+  mode = m;
+  grid.dataset.mode = m;
+  document.querySelectorAll('.modes button').forEach(b =>
+    b.classList.toggle('active', b.dataset.mode === m));
+
+  ctlBlend.classList.toggle('show', m === 'fade' || m === 'swipe');
+  ctlFlick.classList.toggle('show', m === 'flicker');
+  ctlDiff.classList.toggle('show', m === 'diff');
+
+  if (m === 'swipe') { blendLabel.textContent = 'swipe (fake_B →)'; blend.value = swipeVal; }
+  else if (m === 'fade') { blendLabel.textContent = 'fake_B opacity'; blend.value = fadeVal; }
+
+  if (m === 'flicker') startFlicker(); else stopFlicker();
+  applyBlend();
+}
+
+document.querySelectorAll('.modes button').forEach(b =>
+  b.addEventListener('click', () => setMode(b.dataset.mode)));
+
+blend.addEventListener('input', () => {
+  if (mode === 'swipe') swipeVal = +blend.value; else fadeVal = +blend.value;
+  applyBlend();
+});
+flick.addEventListener('input', () => {
+  flickVal.textContent = flick.value;
+  if (mode === 'flicker') startFlicker();
+});
+diffgain.addEventListener('input', () => {
+  const g = (+diffgain.value / 100);
+  grid.style.setProperty('--diffgain', g);
+  diffgainVal.textContent = g.toFixed(1) + '×';
+});
+size.addEventListener('input', () => grid.style.setProperty('--w', size.value + 'px'));
+
+document.getElementById('flipb').addEventListener('change', e =>
+  document.body.classList.toggle('flip-b', e.target.checked));
+document.getElementById('showa').addEventListener('change', e =>
+  document.body.classList.toggle('show-a', e.target.checked));
+document.getElementById('labels').addEventListener('change', e =>
+  document.body.classList.toggle('no-labels', !e.target.checked));
+
+setMode('fade');
+</script>
+</body>
+</html>
