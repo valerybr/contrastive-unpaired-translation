@@ -382,12 +382,16 @@ class GANLoss(nn.Module):
             target_tensor = self.fake_label
         return target_tensor.expand_as(prediction)
 
-    def __call__(self, prediction, target_is_real):
+    def __call__(self, prediction, target_is_real, mask=None):
         """Calculate loss given Discriminator's output and grount truth labels.
 
         Parameters:
             prediction (tensor) - - tpyically the prediction output from a discriminator
             target_is_real (bool) - - if the ground truth label is for real images or fake images
+            mask (tensor) - - optional foreground mask broadcastable to ``prediction``.
+                              When given, the loss is averaged over foreground
+                              elements only (used by CUT's ``--masked_loss``). When
+                              ``None`` the behaviour is exactly the original.
 
         Returns:
             the calculated loss.
@@ -395,18 +399,39 @@ class GANLoss(nn.Module):
         bs = prediction.size(0)
         if self.gan_mode in ['lsgan', 'vanilla']:
             target_tensor = self.get_target_tensor(prediction, target_is_real)
-            loss = self.loss(prediction, target_tensor)
+            if mask is None:
+                loss = self.loss(prediction, target_tensor)
+            elif self.gan_mode == 'lsgan':
+                loss = self._masked_mean(F.mse_loss(prediction, target_tensor, reduction='none'), mask)
+            else:
+                loss = self._masked_mean(F.binary_cross_entropy_with_logits(prediction, target_tensor, reduction='none'), mask)
         elif self.gan_mode == 'wgangp':
-            if target_is_real:
-                loss = -prediction.mean()
+            sign = -1.0 if target_is_real else 1.0
+            if mask is None:
+                loss = sign * prediction.mean()
             else:
-                loss = prediction.mean()
+                loss = sign * self._masked_mean(prediction, mask)
         elif self.gan_mode == 'nonsaturating':
-            if target_is_real:
-                loss = F.softplus(-prediction).view(bs, -1).mean(dim=1)
+            per_elem = F.softplus(-prediction if target_is_real else prediction)
+            if mask is None:
+                # Reduce to a scalar like every other path so callers can
+                # .backward() the result regardless of gan_mode / masking.
+                loss = per_elem.view(bs, -1).mean(dim=1).mean()
             else:
-                loss = F.softplus(prediction).view(bs, -1).mean(dim=1)
+                loss = self._masked_mean(per_elem, mask)
         return loss
+
+    @staticmethod
+    def _masked_mean(loss, mask):
+        """Foreground-weighted mean of a per-element loss map.
+
+        ``expand_as`` keeps the denominator channel-correct when ``prediction``
+        has more channels than the (single-channel) mask. Callers are expected to
+        pass a float mask already at the prediction's spatial resolution (see
+        ``CUTModel._gan_mask``).
+        """
+        mask = mask.expand_as(loss)
+        return (loss * mask).sum() / mask.sum().clamp_min(1.0)
 
 
 def cal_gradient_penalty(netD, real_data, fake_data, device, type='mixed', constant=1.0, lambda_gp=10.0):
@@ -550,7 +575,7 @@ class PatchSampleF(nn.Module):
         init_net(self, self.init_type, self.init_gain, self.gpu_ids)
         self.mlp_init = True
 
-    def forward(self, feats, num_patches=64, patch_ids=None):
+    def forward(self, feats, num_patches=64, patch_ids=None, mask=None):
         return_ids = []
         return_feats = []
         if self.use_mlp and not self.mlp_init:
@@ -561,13 +586,22 @@ class PatchSampleF(nn.Module):
             if num_patches > 0:
                 if patch_ids is not None:
                     patch_id = patch_ids[feat_id]
+                elif mask is not None:
+                    # Restrict patches to the foreground (per-image) so contrastive
+                    # learning only sees the masked object. Returns [B, num_patches].
+                    patch_id = self._foreground_patch_ids(mask, B, H, W, num_patches, feat.device)
                 else:
                     # torch.randperm produces cudaErrorIllegalAddress for newer versions of PyTorch. https://github.com/taesungp/contrastive-unpaired-translation/issues/83
                     #patch_id = torch.randperm(feat_reshape.shape[1], device=feats[0].device)
                     patch_id = np.random.permutation(feat_reshape.shape[1])
                     patch_id = patch_id[:int(min(num_patches, patch_id.shape[0]))]  # .to(patch_ids.device)
-                patch_id = torch.tensor(patch_id, dtype=torch.long, device=feat.device)
-                x_sample = feat_reshape[:, patch_id, :].flatten(0, 1)  # reshape(-1, x.shape[1])
+                    patch_id = torch.tensor(patch_id, dtype=torch.long, device=feat.device)
+                if isinstance(patch_id, torch.Tensor) and patch_id.dim() == 2:
+                    # per-image ids [B, num_patches] -> batched gather
+                    idx = patch_id.unsqueeze(-1).expand(-1, -1, feat_reshape.shape[2])
+                    x_sample = torch.gather(feat_reshape, 1, idx).flatten(0, 1)
+                else:
+                    x_sample = feat_reshape[:, patch_id, :].flatten(0, 1)  # reshape(-1, x.shape[1])
             else:
                 x_sample = feat_reshape
                 patch_id = []
@@ -581,6 +615,30 @@ class PatchSampleF(nn.Module):
                 x_sample = x_sample.permute(0, 2, 1).reshape([B, x_sample.shape[-1], H, W])
             return_feats.append(x_sample)
         return return_feats, return_ids
+
+    def _foreground_patch_ids(self, mask, B, H, W, num_patches, device):
+        """Sample ``num_patches`` flat indices per image from foreground cells.
+
+        ``mask`` is ``[B,1,Hm,Wm]`` in ``{0,1}``; it is nearest-downsampled to the
+        feature resolution ``(H, W)`` and, for each image, ``num_patches``
+        positions are drawn from the foreground (without replacement when enough
+        exist, else with replacement so the count stays exactly ``num_patches``).
+        Falls back to all positions for an image with no foreground. Returns a
+        ``[B, num_patches]`` long tensor. ``np.random`` is used (not
+        ``torch.randperm``) to match the rest of this module — see the CUDA note
+        in :meth:`forward`.
+        """
+        down = F.interpolate(mask.float(), size=(H, W), mode='nearest')
+        down = (down.view(B, H * W) > 0.5)
+        ids = torch.empty(B, num_patches, dtype=torch.long, device=device)
+        for b in range(B):
+            fg = torch.nonzero(down[b], as_tuple=False).flatten()
+            if fg.numel() == 0:
+                fg = torch.arange(H * W, device=down.device)
+            replace = fg.numel() < num_patches
+            sel = np.random.choice(fg.cpu().numpy(), size=num_patches, replace=replace)
+            ids[b] = torch.as_tensor(sel, dtype=torch.long, device=device)
+        return ids
 
 
 class G_Resnet(nn.Module):

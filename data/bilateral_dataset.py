@@ -1,7 +1,7 @@
 """CUT-compatible adapter around `data.bilateral.BilateralDataset`."""
 
 from data.base_dataset import BaseDataset
-from data.bilateral import BilateralDataset as _Bilateral
+from data.bilateral import BilateralDataset as _Bilateral, _load_mask, _mask_path
 
 
 class BilateralDataset(BaseDataset):
@@ -57,4 +57,9 @@ class BilateralDataset(BaseDataset):
     def __getitem__(self, index):
         a, b = self.inner[index]
         l_path, r_path = self.inner.pairs[index]
-        return {'A': a, 'B': b, 'A_paths': str(l_path), 'B_paths': str(r_path)}
+        item = {'A': a, 'B': b, 'A_paths': str(l_path), 'B_paths': str(r_path)}
+        ma = _load_mask(_mask_path(l_path), self.inner.img_size, False, self.inner.crop_width)
+        mb = _load_mask(_mask_path(r_path), self.inner.img_size, self.inner.flip_right, self.inner.crop_width)
+        if ma is not None and mb is not None:
+            item['A_mask'], item['B_mask'] = ma, mb
+        return item

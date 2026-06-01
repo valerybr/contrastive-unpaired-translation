@@ -46,6 +46,32 @@ def _validate_finding_filter(value: str) -> str:
     return value
 
 
+def _resize_flip_crop(
+    img: np.ndarray,
+    img_size: tuple[int, int],
+    flip: bool,
+    crop_width: int | None,
+    interpolation: int,
+) -> np.ndarray:
+    """Shared geometry pipeline: resize → optional flip → crop width.
+
+    Used by both :func:`_load_image` and :func:`_load_mask` so an image and its
+    mask undergo **identical** geometry. The crop is applied after the flip and
+    keeps the rightmost ``crop_width`` columns — the chest-wall side once right
+    breasts are flipped to match left orientation — dropping the left/nipple
+    edge. Disabled when ``crop_width`` is falsy or already >= the resized width.
+    """
+    target_h, target_w = img_size
+    if img.shape[0] != target_h or img.shape[1] != target_w:
+        img = cv2.resize(img, (target_w, target_h),  # cv2 takes (width, height)
+                         interpolation=interpolation)
+    if flip:
+        img = cv2.flip(img, 1)
+    if crop_width and crop_width < img.shape[1]:
+        img = img[:, img.shape[1] - crop_width:]  # keep chest-wall (right) cols
+    return img
+
+
 def _load_image(
     path: Path,
     img_size: tuple[int, int],
@@ -54,26 +80,43 @@ def _load_image(
 ) -> torch.Tensor:
     """Read a grayscale PNG → resize → optional flip → crop width → tensor.
 
-    Returns a ``[1, H, W]`` float32 tensor in ``[-1, 1]``. The crop is applied
-    **after** the flip and keeps the rightmost ``crop_width`` columns — the
-    chest-wall side once right breasts are flipped to match left orientation —
-    dropping the left/nipple edge. Disabled when ``crop_width`` is falsy or
-    already >= the resized width.
+    Returns a ``[1, H, W]`` float32 tensor in ``[-1, 1]``.
     """
     img = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
     if img is None:
         raise FileNotFoundError(f"Cannot read image: {path}")
-    target_h, target_w = img_size
-    if img.shape[0] != target_h or img.shape[1] != target_w:
-        img = cv2.resize(img, (target_w, target_h),  # cv2 takes (width, height)
-                         interpolation=cv2.INTER_LINEAR)
-    if flip:
-        img = cv2.flip(img, 1)
-    if crop_width and crop_width < img.shape[1]:
-        img = img[:, img.shape[1] - crop_width:]  # keep chest-wall (right) cols
+    img = _resize_flip_crop(img, img_size, flip, crop_width, cv2.INTER_LINEAR)
     # [0, 255] uint8 → [-1, 1] float32, shape [1, H, W]
     tensor = torch.from_numpy(img.astype(np.float32)) / 127.5 - 1.0
     return tensor.unsqueeze(0)
+
+
+def _mask_path(image_path: Path) -> Path:
+    """Path to the precomputed foreground mask saved next to ``image_path``."""
+    return image_path.with_name(f"{image_path.stem}_mask.png")
+
+
+def _load_mask(
+    path: Path,
+    img_size: tuple[int, int],
+    flip: bool,
+    crop_width: int | None,
+) -> torch.Tensor | None:
+    """Read a foreground mask with the SAME geometry as :func:`_load_image`.
+
+    Resize uses nearest-neighbour (keeps the mask binary) and the result is
+    binarized to ``{0., 1.}``. Returns a ``[1, H, W]`` float32 tensor, or
+    ``None`` when the mask file is missing/unreadable, so non-masked runs degrade
+    gracefully (the model's ``--masked_loss`` then no-ops).
+    """
+    if not path.exists():
+        return None
+    img = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+    if img is None:
+        return None
+    img = _resize_flip_crop(img, img_size, flip, crop_width, cv2.INTER_NEAREST)
+    mask = (img > 127).astype(np.float32)
+    return torch.from_numpy(mask).unsqueeze(0)
 
 
 class BilateralDataset(Dataset):

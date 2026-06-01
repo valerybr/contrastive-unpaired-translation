@@ -1,5 +1,6 @@
 import numpy as np
 import torch
+import torch.nn.functional as F
 from .base_model import BaseModel
 from . import networks
 from .patchnce import PatchNCELoss
@@ -36,6 +37,11 @@ class CUTModel(BaseModel):
         parser.add_argument('--flip_equivariance',
                             type=util.str2bool, nargs='?', const=True, default=False,
                             help="Enforce flip-equivariance as additional regularization. It's used by FastCUT, but not CUT")
+        parser.add_argument('--masked_loss',
+                            type=util.str2bool, nargs='?', const=True, default=False,
+                            help="Restrict NCE patches and the GAN loss to the foreground mask, and zero the background of the G/D inputs. Requires A_mask/B_mask from the dataset; no-ops when masks are absent.")
+        parser.add_argument('--mask_bg_value', type=float, default=-1.0,
+                            help="Value used to fill the masked-out background (default -1.0 = black in the [-1, 1] range).")
 
         parser.set_defaults(pool_size=0)  # no image pooling
 
@@ -108,6 +114,10 @@ class CUTModel(BaseModel):
         self.set_input(data)
         self.real_A = self.real_A[:bs_per_gpu]
         self.real_B = self.real_B[:bs_per_gpu]
+        if self.mask_A is not None:
+            self.mask_A = self.mask_A[:bs_per_gpu]
+        if self.mask_B is not None:
+            self.mask_B = self.mask_B[:bs_per_gpu]
         self.forward()                     # compute fake images: G(A)
         if self.opt.isTrain:
             self.compute_D_loss().backward()                  # calculate gradients for D
@@ -148,10 +158,21 @@ class CUTModel(BaseModel):
         self.real_A = input['A' if AtoB else 'B'].to(self.device)
         self.real_B = input['B' if AtoB else 'A'].to(self.device)
         self.image_paths = input['A_paths' if AtoB else 'B_paths']
+        # Optional foreground masks, aligned with real_A / real_B respectively.
+        mask_a = input.get('A_mask' if AtoB else 'B_mask')
+        mask_b = input.get('B_mask' if AtoB else 'A_mask')
+        self.mask_A = mask_a.to(self.device) if mask_a is not None else None
+        self.mask_B = mask_b.to(self.device) if mask_b is not None else None
+        self.use_mask = bool(self.opt.masked_loss) and self.mask_A is not None
 
     def forward(self):
         """Run forward pass; called by both functions <optimize_parameters> and <test>."""
         self.real = torch.cat((self.real_A, self.real_B), dim=0) if self.opt.nce_idt and self.opt.isTrain else self.real_A
+        # Foreground mask aligned with self.real (same cat / flip as the images).
+        if self.use_mask:
+            self.mask = torch.cat((self.mask_A, self.mask_B), dim=0) if self.opt.nce_idt and self.opt.isTrain else self.mask_A
+        else:
+            self.mask = None
         if self.opt.flip_equivariance:
             # Under DDP every rank must agree on whether this step is flipped,
             # otherwise the NCE pairing diverges across ranks.
@@ -159,21 +180,46 @@ class CUTModel(BaseModel):
             self.flipped_for_equivariance = udist.broadcast_bool(local_flip, src=0, device=self.device)
             if self.flipped_for_equivariance:
                 self.real = torch.flip(self.real, [3])
+                if self.mask is not None:
+                    self.mask = torch.flip(self.mask, [3])
 
+        if self.mask is not None:
+            self.real = self._apply_mask(self.real, self.mask)  # zero background of G's input
         self.fake = self.netG(self.real)
+        if self.mask is not None:
+            self.fake = self._apply_mask(self.fake, self.mask)  # zero background of G's output
         self.fake_B = self.fake[:self.real_A.size(0)]
         if self.opt.nce_idt:
             self.idt_B = self.fake[self.real_A.size(0):]
+
+    def _apply_mask(self, x, mask):
+        """Replace background (mask==0) with mask_bg_value; keep foreground pixels."""
+        return x * mask + self.opt.mask_bg_value * (1.0 - mask)
+
+    def _gan_mask(self, mask, pred):
+        """Downsample a foreground mask to the discriminator output grid.
+
+        Area interpolation + re-binarize marks a PatchGAN cell as foreground when
+        the majority of its footprint is foreground — more stable at the breast
+        edge than nearest-sampling a single pixel. (A cell whose centre is inside
+        the breast can still see background within its receptive field; this is
+        the standard, accepted PatchGAN approximation.)
+        """
+        m = F.interpolate(mask, size=pred.shape[-2:], mode='area')
+        return (m > 0.5).float()
 
     def compute_D_loss(self):
         """Calculate GAN loss for the discriminator"""
         fake = self.fake_B.detach()
         # Fake; stop backprop to the generator by detaching fake_B
         pred_fake = self.netD(fake)
-        self.loss_D_fake = self.criterionGAN(pred_fake, False).mean()
+        fake_mask = self._gan_mask(self.mask[:self.real_A.size(0)], pred_fake) if self.use_mask else None
+        self.loss_D_fake = self.criterionGAN(pred_fake, False, mask=fake_mask).mean()
         # Real
-        self.pred_real = self.netD(self.real_B)
-        loss_D_real = self.criterionGAN(self.pred_real, True)
+        real_B = self._apply_mask(self.real_B, self.mask_B) if self.use_mask else self.real_B
+        self.pred_real = self.netD(real_B)
+        real_mask = self._gan_mask(self.mask_B, self.pred_real) if self.use_mask else None
+        loss_D_real = self.criterionGAN(self.pred_real, True, mask=real_mask)
         self.loss_D_real = loss_D_real.mean()
 
         # combine loss and calculate gradients
@@ -186,17 +232,18 @@ class CUTModel(BaseModel):
         # First, G(A) should fake the discriminator
         if self.opt.lambda_GAN > 0.0:
             pred_fake = self.netD(fake)
-            self.loss_G_GAN = self.criterionGAN(pred_fake, True).mean() * self.opt.lambda_GAN
+            fake_mask = self._gan_mask(self.mask[:self.real_A.size(0)], pred_fake) if self.use_mask else None
+            self.loss_G_GAN = self.criterionGAN(pred_fake, True, mask=fake_mask).mean() * self.opt.lambda_GAN
         else:
             self.loss_G_GAN = 0.0
 
         if self.opt.lambda_NCE > 0.0:
-            self.loss_NCE = self.calculate_NCE_loss(self.real_A, self.fake_B)
+            self.loss_NCE = self.calculate_NCE_loss(self.real_A, self.fake_B, self.mask_A if self.use_mask else None)
         else:
             self.loss_NCE, self.loss_NCE_bd = 0.0, 0.0
 
         if self.opt.nce_idt and self.opt.lambda_NCE > 0.0:
-            self.loss_NCE_Y = self.calculate_NCE_loss(self.real_B, self.idt_B)
+            self.loss_NCE_Y = self.calculate_NCE_loss(self.real_B, self.idt_B, self.mask_B if self.use_mask else None)
             loss_NCE_both = (self.loss_NCE + self.loss_NCE_Y) * 0.5
         else:
             loss_NCE_both = self.loss_NCE
@@ -204,15 +251,17 @@ class CUTModel(BaseModel):
         self.loss_G = self.loss_G_GAN + loss_NCE_both
         return self.loss_G
 
-    def calculate_NCE_loss(self, src, tgt):
+    def calculate_NCE_loss(self, src, tgt, mask=None):
         n_layers = len(self.nce_layers)
+        if mask is not None:
+            src = self._apply_mask(src, mask)  # encode the same masked source G saw
         feat_q = self.netG(tgt, self.nce_layers, encode_only=True)
 
         if self.opt.flip_equivariance and self.flipped_for_equivariance:
             feat_q = [torch.flip(fq, [3]) for fq in feat_q]
 
         feat_k = self.netG(src, self.nce_layers, encode_only=True)
-        feat_k_pool, sample_ids = self.netF(feat_k, self.opt.num_patches, None)
+        feat_k_pool, sample_ids = self.netF(feat_k, self.opt.num_patches, None, mask=mask)
         feat_q_pool, _ = self.netF(feat_q, self.opt.num_patches, sample_ids)
 
         total_nce_loss = 0.0

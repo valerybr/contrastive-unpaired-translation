@@ -3,7 +3,7 @@
 import random
 
 from data.base_dataset import BaseDataset
-from data.bilateral import UnpairedBilateralDataset as _UnpairedBilateral
+from data.bilateral import UnpairedBilateralDataset as _UnpairedBilateral, _load_mask, _mask_path
 
 
 class UnpairedBilateralDataset(BaseDataset):
@@ -53,4 +53,9 @@ class UnpairedBilateralDataset(BaseDataset):
         r_path = random.choice(self.inner.right_images)
         a = self.inner._load(l_path, flip=False)
         b = self.inner._load(r_path, flip=self.inner.flip_right)
-        return {'A': a, 'B': b, 'A_paths': str(l_path), 'B_paths': str(r_path)}
+        item = {'A': a, 'B': b, 'A_paths': str(l_path), 'B_paths': str(r_path)}
+        ma = _load_mask(_mask_path(l_path), self.inner.img_size, False, self.inner.crop_width)
+        mb = _load_mask(_mask_path(r_path), self.inner.img_size, self.inner.flip_right, self.inner.crop_width)
+        if ma is not None and mb is not None:
+            item['A_mask'], item['B_mask'] = ma, mb
+        return item

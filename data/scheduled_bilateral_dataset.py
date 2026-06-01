@@ -1,7 +1,7 @@
 """CUT-compatible adapter around `data.bilateral.ScheduledBilateralDataset`."""
 
 from data.base_dataset import BaseDataset
-from data.bilateral import ScheduledBilateralDataset as _Scheduled
+from data.bilateral import ScheduledBilateralDataset as _Scheduled, _load_mask, _mask_path
 
 
 def _parse_schedule(s: str) -> list[tuple[int, float]]:
@@ -91,4 +91,9 @@ class ScheduledBilateralDataset(BaseDataset):
         # r_path is the actually-resolved right image (the random pick under the
         # schedule, not necessarily the true pair), so B_paths labels B correctly.
         a, b, l_path, r_path = self.inner[index]
-        return {'A': a, 'B': b, 'A_paths': str(l_path), 'B_paths': str(r_path)}
+        item = {'A': a, 'B': b, 'A_paths': str(l_path), 'B_paths': str(r_path)}
+        ma = _load_mask(_mask_path(l_path), self.inner.img_size, False, self.inner.crop_width)
+        mb = _load_mask(_mask_path(r_path), self.inner.img_size, self.inner.flip_right, self.inner.crop_width)
+        if ma is not None and mb is not None:
+            item['A_mask'], item['B_mask'] = ma, mb
+        return item
