@@ -86,9 +86,32 @@
   body.no-labels .box .lbl { display: none; }
   #grid[data-mode="diff"] .box .lbl,
   #grid[data-mode="flicker"] .box .lbl { display: none; }
+
+  /* finding bounding boxes (from findings.json) */
+  .bboxes { position: absolute; inset: 0; pointer-events: none; line-height: 0; }
+  /* the .base layer tracks real_B's display flip so its boxes stay aligned */
+  body.flip-b .box .bboxes.base { transform: scaleX(-1); }
+  .bbox { position: absolute; border: 2px solid; box-sizing: border-box; }
+  .bboxes.over .bbox { border-color: #5fff5f; }  /* fake_B / input findings */
+  .bboxes.base .bbox { border-color: #ff5f5f; }  /* real_B reference findings */
+  .bbox .cap {
+    position: absolute; top: 0; left: 0; transform: translateY(-100%);
+    font: 9px/1.3 system-ui, sans-serif; padding: 0 3px; white-space: nowrap;
+    background: rgba(0,0,0,.6); color: #fff; border-radius: 2px;
+  }
+  .bboxes.over .bbox .cap { color: #cffccf; }
+  .bboxes.base .bbox .cap { color: #ffcfcf; }
+  /* un-mirror caption text when the base layer is flipped */
+  body.flip-b .box .bboxes.base .bbox .cap { transform: translateY(-100%) scaleX(-1); }
+  body.no-labels .bbox .cap { display: none; }
+  /* toggle: boxes default on; hide where the geometry doesn't hold */
+  .bboxes { display: none; }
+  body.show-boxes .bboxes { display: block; }
+  #grid[data-mode="sbs"] .bboxes,
+  #grid[data-mode="diff"] .bboxes { display: none; }
 </style>
 </head>
-<body class="flip-b">
+<body class="flip-b show-boxes">
 <header>
   <div class="group">
     <label class="title">Folder</label>
@@ -132,6 +155,7 @@
     <label class="chk"><input type="checkbox" id="flipb" checked> flip real_B</label>
     <label class="chk"><input type="checkbox" id="showa"> show real_A</label>
     <label class="chk"><input type="checkbox" id="labels" checked> labels</label>
+    <label class="chk"><input type="checkbox" id="boxes" checked> boxes</label>
   </div>
 
   <div class="group"><span class="val" id="count" style="color:#888"></span></div>
@@ -208,7 +232,32 @@ async function discoverFolders(root = '', maxDepth = 4) {
   return found.sort();
 }
 
-function buildCards(files, base) {
+// Build one absolutely-positioned overlay layer of finding boxes. `boxes` is a
+// list of {box:[x0,y0,x1,y1] (normalized), label}. `cls` is 'over' (boxes that
+// belong on fake_B / the input image) or 'base' (boxes on real_B).
+function boxLayer(boxes, cls) {
+  const layer = document.createElement('div');
+  layer.className = 'bboxes ' + cls;
+  for (const b of boxes) {
+    const [x0, y0, x1, y1] = b.box;
+    const d = document.createElement('div');
+    d.className = 'bbox';
+    d.style.left = (x0 * 100) + '%';
+    d.style.top = (y0 * 100) + '%';
+    d.style.width = ((x1 - x0) * 100) + '%';
+    d.style.height = ((y1 - y0) * 100) + '%';
+    if (b.label) {
+      const cap = document.createElement('span');
+      cap.className = 'cap';
+      cap.textContent = b.label;
+      d.appendChild(cap);
+    }
+    layer.appendChild(d);
+  }
+  return layer;
+}
+
+function buildCards(files, base, findings) {
   const frag = document.createDocumentFragment();
   for (const f of files) {
     const card = document.createElement('div');
@@ -227,6 +276,13 @@ function buildCards(files, base) {
           <span class="lbl r">real_B</span>
         </div>
       </div>`;
+    // real_A boxes ride on fake_B (= G(real_A), same grid); real_B boxes on real_B.
+    const fd = findings[f];
+    if (fd) {
+      const box = card.querySelector('.box');
+      if (fd.real_A && fd.real_A.length) box.appendChild(boxLayer(fd.real_A, 'over'));
+      if (fd.real_B && fd.real_B.length) box.appendChild(boxLayer(fd.real_B, 'base'));
+    }
     frag.appendChild(card);
   }
   grid.appendChild(frag);
@@ -261,7 +317,13 @@ async function loadFolder(base) {
   try {
     const files = await listImages(base + 'images/real_B/');
     if (!files.length) throw new Error('no image files found in ' + base + 'images/real_B/');
-    buildCards(files, base);
+    // Optional sidecar of finding boxes; absent (404) just means "no boxes".
+    let findings = {};
+    try {
+      const r = await fetch(base + 'findings.json');
+      if (r.ok) findings = await r.json();
+    } catch { /* no findings.json — fine */ }
+    buildCards(files, base, findings);
   } catch (err) {
     showLoadError(err, base);
   }
@@ -366,6 +428,8 @@ document.getElementById('showa').addEventListener('change', e =>
   document.body.classList.toggle('show-a', e.target.checked));
 document.getElementById('labels').addEventListener('change', e =>
   document.body.classList.toggle('no-labels', !e.target.checked));
+document.getElementById('boxes').addEventListener('change', e =>
+  document.body.classList.toggle('show-boxes', e.target.checked));
 
 setMode('fade');
 </script>

@@ -72,6 +72,53 @@ def _resize_flip_crop(
     return img
 
 
+def _transform_boxes(
+    boxes: list[tuple[float, float, float, float]],
+    img_size: tuple[int, int],
+    flip: bool,
+    crop_width: int | None,
+) -> list[list[float]]:
+    """Map finding bounding boxes through the same geometry as :func:`_load_image`.
+
+    Mirrors :func:`_resize_flip_crop` *minus the resize*: the input boxes are
+    assumed to already be in ``bilateral_size`` (``img_size``) pixel coordinates,
+    so only the optional horizontal flip and the width crop are applied — those
+    are per-run flags (``flip_right`` / ``crop_width``) a static annotation file
+    can't encode. The crop keeps the rightmost ``crop_width`` columns (the
+    chest-wall side once right breasts are flipped), matching ``_resize_flip_crop``.
+
+    Args:
+        boxes:      ``(xmin, ymin, xmax, ymax)`` tuples in ``img_size`` pixels.
+        img_size:   ``(height, width)`` of the resized image, as on the dataset.
+        flip:       Whether this image was flipped horizontally on load.
+        crop_width: Output crop width, or falsy to disable.
+
+    Returns:
+        ``[x0, y0, x1, y1]`` boxes normalized to ``[0, 1]`` against the **output**
+        image (after crop), clipped to its bounds. Boxes that fall fully outside
+        the crop are dropped.
+    """
+    target_h, target_w = img_size
+    out_w = crop_width if (crop_width and crop_width < target_w) else target_w
+    off = target_w - out_w  # left columns dropped by the crop
+
+    out: list[list[float]] = []
+    for xmin, ymin, xmax, ymax in boxes:
+        x0, x1 = float(xmin), float(xmax)
+        if flip:
+            x0, x1 = target_w - x1, target_w - x0
+        x0, x1 = x0 - off, x1 - off
+        # clip to the cropped output bounds
+        x0 = min(max(x0, 0.0), out_w)
+        x1 = min(max(x1, 0.0), out_w)
+        y0 = min(max(float(ymin), 0.0), target_h)
+        y1 = min(max(float(ymax), 0.0), target_h)
+        if x1 <= x0 or y1 <= y0:  # fully outside the crop (or degenerate)
+            continue
+        out.append([x0 / out_w, y0 / target_h, x1 / out_w, y1 / target_h])
+    return out
+
+
 def _load_image(
     path: Path,
     img_size: tuple[int, int],

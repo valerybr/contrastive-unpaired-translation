@@ -64,6 +64,21 @@ run_test() {
     --results_dir "${RESULTS_DIR}" \
     --checkpoints_dir "${CHECKPOINTS_DIR}" \
     --bilateral_size ${BILATERAL_SIZE}
+
+  # Emit findings.json alongside the saved images so util/overlay.html can draw
+  # the finding bounding boxes. Mirrors the geometry args above so the boxes line
+  # up with the saved (flipped/cropped) PNGs.
+  python -m util.write_findings \
+    --dataroot "${DATAROOT}" \
+    --annotations_csv "${ANNOTATIONS_CSV}" \
+    --finding_filter "${FINDING_FILTER}" \
+    --name "${name}" \
+    --direction "${DIRECTION}" \
+    --split "${SPLIT}" \
+    --phase test \
+    --epoch "${EPOCH}" \
+    --results_dir "${RESULTS_DIR}" \
+    --bilateral_size ${BILATERAL_SIZE}
 }
 
 # All three checkpoints use the paired `bilateral` adapter with the findings
