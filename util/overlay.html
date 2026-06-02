@@ -68,7 +68,10 @@
   #grid[data-mode="diff"] .box img.over { mix-blend-mode: difference; }
   #grid[data-mode="flicker"] .box img.over { opacity: 0; transition: none; }
   #grid[data-mode="flicker"].flick-fake .box img.over { opacity: 1; }
-  #grid[data-mode="sbs"] .box { display: flex; gap: 2px; background: transparent; }
+  /* row-reverse puts the over layer (fake_B) on the left and base (real_B) on
+     the right, so the two halves line up with the fixed corner labels
+     (.lbl.l = fake_B, .lbl.r = real_B) — same left/right convention as swipe. */
+  #grid[data-mode="sbs"] .box { display: flex; flex-direction: row-reverse; gap: 2px; background: transparent; }
   #grid[data-mode="sbs"] .box img.base,
   #grid[data-mode="sbs"] .box img.over {
     position: static; width: 50%; height: auto;
