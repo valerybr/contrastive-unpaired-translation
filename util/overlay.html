@@ -107,11 +107,18 @@
   /* un-mirror caption text when the base layer is flipped */
   body.flip-b .box .bboxes.base .bbox .cap { transform: translateY(-100%) scaleX(-1); }
   body.no-labels .bbox .cap { display: none; }
-  /* toggle: boxes default on; hide where the geometry doesn't hold */
+  /* toggle: boxes default on. diff keeps the full-box overlay geometry, so the
+     boxes stay valid there with no extra rules. side-by-side splits the box
+     into two halves, so each finding layer is confined to its own image below. */
   .bboxes { display: none; }
   body.show-boxes .bboxes { display: block; }
-  #grid[data-mode="sbs"] .bboxes,
-  #grid[data-mode="diff"] .bboxes { display: none; }
+  /* side-by-side: row-reverse lays out fake_B (over) on the left, real_B (base)
+     on the right. Clamp each layer to its own 50%-width image so the normalized
+     box coords map onto that image — the 2px flex gap shrinks each half to
+     calc(50% - 1px). over = fake_B findings, base = real_B findings, so the
+     boxes are drawn on both images. */
+  #grid[data-mode="sbs"] .bboxes.over { right: auto; width: calc(50% - 1px); }
+  #grid[data-mode="sbs"] .bboxes.base { left: auto; right: 0; width: calc(50% - 1px); }
 </style>
 </head>
 <body class="flip-b show-boxes">
