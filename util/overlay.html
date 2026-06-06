@@ -19,11 +19,11 @@
   }
   header .group { display: flex; align-items: center; gap: 8px; }
   header .group > label.title { color: #888; font-size: 11px; text-transform: uppercase; letter-spacing: .5px; }
-  .modes button {
+  .modes button, .zoom button {
     background: #2a2a2a; color: #ccc; border: 1px solid #444;
     padding: 5px 11px; border-radius: 5px; cursor: pointer; font-size: 13px;
   }
-  .modes button.active { background: #3a6ea5; border-color: #4f8bcb; color: #fff; }
+  .modes button.active, .zoom button.active { background: #3a6ea5; border-color: #4f8bcb; color: #fff; }
   input[type=range] { width: 150px; vertical-align: middle; }
   .val { display: inline-block; min-width: 34px; text-align: right; color: #9cf; font-variant-numeric: tabular-nums; }
   .ctl { display: none; align-items: center; gap: 8px; }
@@ -158,7 +158,17 @@
 
   <div class="group">
     <label class="title">Size</label>
-    <input type="range" id="size" min="180" max="560" step="20" value="320">
+    <input type="range" id="size" min="180" max="1600" step="20" value="320">
+    <span class="val" id="size-val">320</span>
+  </div>
+
+  <div class="group zoom" id="zoom">
+    <label class="title">Zoom</label>
+    <button data-w="320" class="active">1×</button>
+    <button data-w="640">2×</button>
+    <button data-w="960">3×</button>
+    <button data-w="1280">4×</button>
+    <button data-w="100%">Full</button>
   </div>
 
   <div class="group">
@@ -367,6 +377,8 @@ const flickVal = document.getElementById('flick-val');
 const diffgain = document.getElementById('diffgain');
 const diffgainVal = document.getElementById('diffgain-val');
 const size = document.getElementById('size');
+const sizeVal = document.getElementById('size-val');
+const zoomBtns = document.querySelectorAll('#zoom button');
 
 const ctlBlend = document.getElementById('ctl-blend');
 const ctlFlick = document.getElementById('ctl-flick');
@@ -430,7 +442,21 @@ diffgain.addEventListener('input', () => {
   grid.style.setProperty('--diffgain', g);
   diffgainVal.textContent = g.toFixed(1) + '×';
 });
-size.addEventListener('input', () => grid.style.setProperty('--w', size.value + 'px'));
+// --w drives the grid column min-width; bigger -> larger images, fewer per row.
+// The slider gives fine control (180–1600px); the Zoom presets jump to common
+// multiples, and "Full" (100%) forces a single full-width column.
+size.addEventListener('input', () => {
+  grid.style.setProperty('--w', size.value + 'px');
+  sizeVal.textContent = size.value;
+  zoomBtns.forEach(b => b.classList.remove('active'));  // freehand size: no preset active
+});
+
+zoomBtns.forEach(b => b.addEventListener('click', () => {
+  const w = b.dataset.w;
+  grid.style.setProperty('--w', w.endsWith('%') ? w : w + 'px');
+  zoomBtns.forEach(x => x.classList.toggle('active', x === b));
+  if (!w.endsWith('%')) { size.value = w; sizeVal.textContent = w; }  // sync slider for px presets
+}));
 
 document.getElementById('flipb').addEventListener('change', e =>
   document.body.classList.toggle('flip-b', e.target.checked));
