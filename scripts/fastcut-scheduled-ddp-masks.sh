@@ -28,7 +28,7 @@ export TORCH_NCCL_BLOCKING_WAIT=1
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 export TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC=1800
 
-RUN_NAME=vindr_scheduled_ddp_g1_nce5_masks
+RUN_NAME=vindr_scheduled_ddp_g1_nce5_masks_$(date +%Y%m%d)
 
 # Curriculum: start at 50% random pairing, ramp down to 0% (fully paired)
 # over the first 80 epochs. Past the schedule, p holds at the last value

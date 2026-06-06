@@ -15,7 +15,7 @@ conda activate mgdetect
 cd /home/valeryb/contrastive-unpaired-translation
 
 
-RUN_NAME=vindr_unpaired_bilateral_cut1
+RUN_NAME=vindr_unpaired_bilateral_cut1_$(date +%Y%m%d)
 
 python train.py \
   --dataroot /home/management/projects/gilba/valeryb/data/vindr/images \
