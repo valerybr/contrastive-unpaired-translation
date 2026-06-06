@@ -42,6 +42,10 @@ class CUTModel(BaseModel):
                             help="Restrict NCE patches and the GAN loss to the foreground mask, and zero the background of the G/D inputs. Requires A_mask/B_mask from the dataset; no-ops when masks are absent.")
         parser.add_argument('--mask_bg_value', type=float, default=-1.0,
                             help="Value used to fill the masked-out background (default -1.0 = black in the [-1, 1] range).")
+        parser.add_argument('--mask_feather', type=int, default=3,
+                            help="Gaussian feather radius (px) for blending foreground over the background, so masking introduces no hard step edge at the boundary. 0 = hard binary mask (old behaviour).")
+        parser.add_argument('--mask_erode', type=int, default=1,
+                            help="Erode the foreground by this many cells for the GAN/NCE loss masks, so the scored region stays strictly inside the kept (feathered) region and no boundary ring is left unconstrained. 0 = no erosion.")
 
         parser.set_defaults(pool_size=0)  # no image pooling
 
@@ -192,21 +196,66 @@ class CUTModel(BaseModel):
         if self.opt.nce_idt:
             self.idt_B = self.fake[self.real_A.size(0):]
 
+    def _feather(self, mask):
+        """Gaussian-blur a binary mask into a soft alpha in [0, 1].
+
+        Blending with a feathered alpha (instead of a hard 0/1 multiply) removes
+        the step edge at the mask boundary that a convolutional G + PatchGAN
+        otherwise reproduce as a ghost contour. ``--mask_feather 0`` restores the
+        old hard mask. A pixel whose whole ``(2r+1)`` neighbourhood is background
+        gets alpha exactly 0, so the deep background stays at ``mask_bg_value``.
+        """
+        r = int(self.opt.mask_feather)
+        if r <= 0:
+            return mask
+        k = getattr(self, '_feather_kernel', None)
+        if k is None or k.shape[-1] != 2 * r + 1:
+            ax = torch.arange(2 * r + 1, dtype=torch.float32) - r
+            g = torch.exp(-(ax ** 2) / (2 * (r / 2.0) ** 2))
+            g = g / g.sum()
+            k = (g[:, None] * g[None, :]).view(1, 1, 2 * r + 1, 2 * r + 1)
+            self._feather_kernel = k
+        k = k.to(mask.device, mask.dtype)
+        # Replicate-pad (not zero-pad) so tissue reaching the image border — e.g.
+        # the chest-wall crop edge — keeps alpha ~= 1 instead of being feathered
+        # toward the background and creating a new edge there.
+        return F.conv2d(F.pad(mask, (r, r, r, r), mode='replicate'), k)
+
     def _apply_mask(self, x, mask):
-        """Replace background (mask==0) with mask_bg_value; keep foreground pixels."""
-        return x * mask + self.opt.mask_bg_value * (1.0 - mask)
+        """Blend foreground over a constant background via a feathered alpha.
+
+        ``x * a + mask_bg_value * (1 - a)`` with ``a = feather(mask)``; far from
+        the boundary this keeps foreground pixels and fills background with
+        ``mask_bg_value`` exactly, but the transition is a smooth ramp.
+        """
+        a = self._feather(mask)
+        return x * a + self.opt.mask_bg_value * (1.0 - a)
+
+    @staticmethod
+    def _erode(mask, r):
+        """Binary morphological erosion by radius ``r`` cells (min-pool). No-op for r<=0."""
+        if r <= 0:
+            return mask
+        k = 2 * r + 1
+        return -F.max_pool2d(-mask, kernel_size=k, stride=1, padding=r)
 
     def _gan_mask(self, mask, pred):
-        """Downsample a foreground mask to the discriminator output grid.
+        """Downsample a foreground mask to the discriminator output grid, eroded.
 
         Area interpolation + re-binarize marks a PatchGAN cell as foreground when
-        the majority of its footprint is foreground — more stable at the breast
-        edge than nearest-sampling a single pixel. (A cell whose centre is inside
-        the breast can still see background within its receptive field; this is
-        the standard, accepted PatchGAN approximation.)
+        the majority of its footprint is foreground; eroding by ``--mask_erode``
+        cells then drops the boundary ring so the scored region sits strictly
+        inside the kept (feathered) region — otherwise those straddling cells are
+        unconstrained and G is free to grow a spurious edge there. An image whose
+        mask erodes to nothing falls back to its un-eroded cells.
         """
-        m = F.interpolate(mask, size=pred.shape[-2:], mode='area')
-        return (m > 0.5).float()
+        m = (F.interpolate(mask, size=pred.shape[-2:], mode='area') > 0.5).float()
+        er = self._erode(m, self.opt.mask_erode)
+        if self.opt.mask_erode > 0:
+            empty = er.flatten(1).sum(1) == 0
+            if bool(empty.any()):
+                er[empty] = m[empty]
+        return er
 
     def compute_D_loss(self):
         """Calculate GAN loss for the discriminator"""

@@ -151,8 +151,9 @@ def _load_mask(
 ) -> torch.Tensor | None:
     """Read a foreground mask with the SAME geometry as :func:`_load_image`.
 
-    Resize uses nearest-neighbour (keeps the mask binary) and the result is
-    binarized to ``{0., 1.}``. Returns a ``[1, H, W]`` float32 tensor, or
+    Resize uses the SAME interpolation as :func:`_load_image` (bilinear) so the
+    mask boundary coincides with the image's resized skin line, then the result
+    is binarized to ``{0., 1.}``. Returns a ``[1, H, W]`` float32 tensor, or
     ``None`` when the mask file is missing/unreadable, so non-masked runs degrade
     gracefully (the model's ``--masked_loss`` then no-ops).
     """
@@ -161,7 +162,7 @@ def _load_mask(
     img = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
     if img is None:
         return None
-    img = _resize_flip_crop(img, img_size, flip, crop_width, cv2.INTER_NEAREST)
+    img = _resize_flip_crop(img, img_size, flip, crop_width, cv2.INTER_LINEAR)
     mask = (img > 127).astype(np.float32)
     return torch.from_numpy(mask).unsqueeze(0)
 

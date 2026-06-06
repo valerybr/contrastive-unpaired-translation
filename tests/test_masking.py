@@ -274,9 +274,15 @@ def test_model_integration_masked():
             for k, v in losses.items():
                 assert math.isfinite(v), f"loss {k} not finite: {v}"
 
-            # Background of fake_B must be the mask_bg_value where mask_A == 0.
-            bg = model.fake_B.detach()[data["A_mask"] == 0]
-            assert torch.allclose(bg, torch.full_like(bg, opt.mask_bg_value), atol=1e-5)
+            # Deep background must equal mask_bg_value. Feathering blends a soft
+            # alpha within `mask_feather` px of the edge, so only pixels with no
+            # foreground in their (2r+1) neighbourhood are forced exactly to bg.
+            ma = data["A_mask"]
+            r = opt.mask_feather
+            reach = F.max_pool2d(ma, 2 * r + 1, 1, r) if r > 0 else ma
+            deep_bg = model.fake_B.detach()[reach == 0]
+            assert deep_bg.numel() > 0
+            assert torch.allclose(deep_bg, torch.full_like(deep_bg, opt.mask_bg_value), atol=1e-5)
 
 
 def test_model_integration_unmasked_regression():

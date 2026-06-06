@@ -274,9 +274,9 @@ def define_F(input_nc, netF, norm='batch', use_dropout=False, init_type='normal'
     elif netF == 'reshape':
         net = ReshapeF()
     elif netF == 'sample':
-        net = PatchSampleF(use_mlp=False, init_type=init_type, init_gain=init_gain, gpu_ids=gpu_ids, nc=opt.netF_nc)
+        net = PatchSampleF(use_mlp=False, init_type=init_type, init_gain=init_gain, gpu_ids=gpu_ids, nc=opt.netF_nc, mask_erode=getattr(opt, 'mask_erode', 0))
     elif netF == 'mlp_sample':
-        net = PatchSampleF(use_mlp=True, init_type=init_type, init_gain=init_gain, gpu_ids=gpu_ids, nc=opt.netF_nc)
+        net = PatchSampleF(use_mlp=True, init_type=init_type, init_gain=init_gain, gpu_ids=gpu_ids, nc=opt.netF_nc, mask_erode=getattr(opt, 'mask_erode', 0))
     elif netF == 'strided_conv':
         net = StridedConvF(init_type=init_type, init_gain=init_gain, gpu_ids=gpu_ids)
     else:
@@ -554,7 +554,7 @@ class StridedConvF(nn.Module):
 
 
 class PatchSampleF(nn.Module):
-    def __init__(self, use_mlp=False, init_type='normal', init_gain=0.02, nc=256, gpu_ids=[]):
+    def __init__(self, use_mlp=False, init_type='normal', init_gain=0.02, nc=256, gpu_ids=[], mask_erode=0):
         # potential issues: currently, we use the same patch_ids for multiple images in the batch
         super(PatchSampleF, self).__init__()
         self.l2norm = Normalize(2)
@@ -564,6 +564,10 @@ class PatchSampleF(nn.Module):
         self.init_type = init_type
         self.init_gain = init_gain
         self.gpu_ids = gpu_ids
+        # Erode the foreground (in feature cells) before sampling NCE patches, so
+        # boundary cells — whose receptive field straddles the masked edge — are
+        # excluded. Kept consistent with CUTModel._gan_mask. 0 disables.
+        self.mask_erode = mask_erode
 
     def create_mlp(self, feats):
         for mlp_id, feat in enumerate(feats):
@@ -620,20 +624,27 @@ class PatchSampleF(nn.Module):
         """Sample ``num_patches`` flat indices per image from foreground cells.
 
         ``mask`` is ``[B,1,Hm,Wm]`` in ``{0,1}``; it is nearest-downsampled to the
-        feature resolution ``(H, W)`` and, for each image, ``num_patches``
-        positions are drawn from the foreground (without replacement when enough
-        exist, else with replacement so the count stays exactly ``num_patches``).
-        Falls back to all positions for an image with no foreground. Returns a
-        ``[B, num_patches]`` long tensor. ``np.random`` is used (not
-        ``torch.randperm``) to match the rest of this module — see the CUDA note
-        in :meth:`forward`.
+        feature resolution ``(H, W)`` and eroded by ``self.mask_erode`` cells so
+        boundary cells (whose receptive field straddles the masked edge) are not
+        sampled. For each image ``num_patches`` positions are drawn from the
+        eroded foreground (without replacement when enough exist, else with
+        replacement so the count stays exactly ``num_patches``). Falls back to the
+        un-eroded foreground when erosion empties an image, then to all positions
+        when there is no foreground at all. Returns a ``[B, num_patches]`` long
+        tensor. ``np.random`` is used (not ``torch.randperm``) to match the rest
+        of this module — see the CUDA note in :meth:`forward`.
         """
-        down = F.interpolate(mask.float(), size=(H, W), mode='nearest')
-        down = (down.view(B, H * W) > 0.5)
+        down = (F.interpolate(mask.float(), size=(H, W), mode='nearest') > 0.5).float()
+        r = int(self.mask_erode)
+        eroded = -F.max_pool2d(-down, kernel_size=2 * r + 1, stride=1, padding=r) if r > 0 else down
+        down = down.view(B, H * W) > 0.5
+        eroded = eroded.view(B, H * W) > 0.5
         ids = torch.empty(B, num_patches, dtype=torch.long, device=device)
         for b in range(B):
-            fg = torch.nonzero(down[b], as_tuple=False).flatten()
-            if fg.numel() == 0:
+            fg = torch.nonzero(eroded[b], as_tuple=False).flatten()
+            if fg.numel() == 0:                       # erosion removed the whole object
+                fg = torch.nonzero(down[b], as_tuple=False).flatten()
+            if fg.numel() == 0:                       # no foreground at all
                 fg = torch.arange(H * W, device=down.device)
             replace = fg.numel() < num_patches
             sel = np.random.choice(fg.cpu().numpy(), size=num_patches, replace=replace)
