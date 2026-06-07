@@ -296,11 +296,11 @@ function buildCards(files, base, findings) {
           <span class="lbl r">real_B</span>
         </div>
       </div>`;
-    // real_A boxes ride on fake_B (= G(real_A), same grid); real_B boxes on real_B.
+    // Only draw real_B reference boxes (base, red). The real_A findings (green,
+    // on fake_B) are intentionally suppressed.
     const fd = findings[f];
     if (fd) {
       const box = card.querySelector('.box');
-      if (fd.real_A && fd.real_A.length) box.appendChild(boxLayer(fd.real_A, 'over'));
       if (fd.real_B && fd.real_B.length) box.appendChild(boxLayer(fd.real_B, 'base'));
     }
     frag.appendChild(card);

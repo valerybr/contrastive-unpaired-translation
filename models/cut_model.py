@@ -37,6 +37,12 @@ class CUTModel(BaseModel):
         parser.add_argument('--flip_equivariance',
                             type=util.str2bool, nargs='?', const=True, default=False,
                             help="Enforce flip-equivariance as additional regularization. It's used by FastCUT, but not CUT")
+        parser.add_argument('--bidirectional',
+                            type=util.str2bool, nargs='?', const=True, default=False,
+                            help="Train a single shared G symmetrically: fake_R=G(real_A) AND fake_L=G(real_B). "
+                                 "Applies the adversarial loss and the standard PatchNCE in both directions. "
+                                 "Intended for the contralateral (L-CC <-> R-CC) setup; requires --flip_right so "
+                                 "L and R share one canonical domain. No-ops for stock CUT/FastCUT when off.")
         parser.add_argument('--masked_loss',
                             type=util.str2bool, nargs='?', const=True, default=False,
                             help="Restrict NCE patches and the GAN loss to the foreground mask, and zero the background of the G/D inputs. Requires A_mask/B_mask from the dataset; no-ops when masks are absent.")
@@ -62,10 +68,23 @@ class CUTModel(BaseModel):
         else:
             raise ValueError(opt.CUT_mode)
 
+        if opt.bidirectional:
+            # flip_equivariance randomly H-flips the input, which undoes the canonical
+            # orientation that --flip_right + crop_width (keep chest-wall columns)
+            # establish for the contralateral setup. Override the (FastCUT) default so
+            # the shared-G map stays oriented. An explicit --flip_equivariance True is
+            # caught again in __init__.
+            parser.set_defaults(flip_equivariance=False)
+
         return parser
 
     def __init__(self, opt):
         BaseModel.__init__(self, opt)
+
+        if opt.bidirectional and opt.flip_equivariance:
+            print("[CUT] --bidirectional is set: disabling --flip_equivariance "
+                  "(it H-flips inputs and undoes the --flip_right / crop_width canonical orientation).")
+            opt.flip_equivariance = False
 
         # specify the training losses you want to print out.
         # The training/test scripts will call <BaseModel.get_current_losses>
@@ -76,6 +95,14 @@ class CUTModel(BaseModel):
         if opt.nce_idt and self.isTrain:
             self.loss_names += ['NCE_Y']
             self.visual_names += ['idt_B']
+
+        if opt.bidirectional and self.isTrain:
+            # Second direction R->L: G(real_B) is a real translation (fake_L), scored
+            # by its own GAN + standard NCE (NCE_Y). Add the log/visual if not already
+            # present from nce_idt.
+            if 'NCE_Y' not in self.loss_names:
+                self.loss_names += ['NCE_Y']
+            self.visual_names += ['fake_L']
 
         if self.isTrain:
             self.model_names = ['G', 'F', 'D']
@@ -171,10 +198,14 @@ class CUTModel(BaseModel):
 
     def forward(self):
         """Run forward pass; called by both functions <optimize_parameters> and <test>."""
-        self.real = torch.cat((self.real_A, self.real_B), dim=0) if self.opt.nce_idt and self.opt.isTrain else self.real_A
+        # Run the shared G over both reals when we need the second direction: the
+        # identity branch (nce_idt) OR the bidirectional shared-G branch. fake[:n] is
+        # G(real_A)=fake_R, fake[n:] is G(real_B)=fake_L/idt_B.
+        both = (self.opt.nce_idt or self.opt.bidirectional) and self.opt.isTrain
+        self.real = torch.cat((self.real_A, self.real_B), dim=0) if both else self.real_A
         # Foreground mask aligned with self.real (same cat / flip as the images).
         if self.use_mask:
-            self.mask = torch.cat((self.mask_A, self.mask_B), dim=0) if self.opt.nce_idt and self.opt.isTrain else self.mask_A
+            self.mask = torch.cat((self.mask_A, self.mask_B), dim=0) if both else self.mask_A
         else:
             self.mask = None
         if self.opt.flip_equivariance:
@@ -195,6 +226,10 @@ class CUTModel(BaseModel):
         self.fake_B = self.fake[:self.real_A.size(0)]
         if self.opt.nce_idt:
             self.idt_B = self.fake[self.real_A.size(0):]
+        if both and self.opt.bidirectional:
+            # Second direction: fake_L = G(real_B). Same tensor as idt_B when nce_idt
+            # is also on, but named for its translation (not identity) role.
+            self.fake_L = self.fake[self.real_A.size(0):]
 
     def _feather(self, mask):
         """Gaussian-blur a binary mask into a soft alpha in [0, 1].
@@ -257,32 +292,55 @@ class CUTModel(BaseModel):
                 er[empty] = m[empty]
         return er
 
+    def _D_direction(self, fake, fake_mask_src, real_img, real_mask_src):
+        """One adversarial direction's discriminator terms.
+
+        ``fake`` is scored as fake (gradient to G stopped by detaching), ``real_img``
+        as real. ``fake_mask_src`` / ``real_mask_src`` are the full-res foreground
+        masks aligned with ``fake`` / ``real_img``; ``_gan_mask`` downsamples + erodes
+        them to the PatchGAN grid. Returns ``(loss_fake, loss_real, pred_real)``.
+        """
+        pred_fake = self.netD(fake.detach())
+        fmask = self._gan_mask(fake_mask_src, pred_fake) if self.use_mask else None
+        loss_fake = self.criterionGAN(pred_fake, False, mask=fmask).mean()
+        real_in = self._apply_mask(real_img, real_mask_src) if self.use_mask else real_img
+        pred_real = self.netD(real_in)
+        rmask = self._gan_mask(real_mask_src, pred_real) if self.use_mask else None
+        loss_real = self.criterionGAN(pred_real, True, mask=rmask).mean()
+        return loss_fake, loss_real, pred_real
+
     def compute_D_loss(self):
-        """Calculate GAN loss for the discriminator"""
-        fake = self.fake_B.detach()
-        # Fake; stop backprop to the generator by detaching fake_B
-        pred_fake = self.netD(fake)
-        fake_mask = self._gan_mask(self.mask[:self.real_A.size(0)], pred_fake) if self.use_mask else None
-        self.loss_D_fake = self.criterionGAN(pred_fake, False, mask=fake_mask).mean()
-        # Real
-        real_B = self._apply_mask(self.real_B, self.mask_B) if self.use_mask else self.real_B
-        self.pred_real = self.netD(real_B)
-        real_mask = self._gan_mask(self.mask_B, self.pred_real) if self.use_mask else None
-        loss_D_real = self.criterionGAN(self.pred_real, True, mask=real_mask)
-        self.loss_D_real = loss_D_real.mean()
+        """Calculate GAN loss for the discriminator (both directions if --bidirectional)."""
+        n = self.real_A.size(0)
+        mask_R = self.mask[:n] if self.use_mask else None  # aligned with fake_B = G(L)
+        self.loss_D_fake, self.loss_D_real, self.pred_real = self._D_direction(
+            self.fake_B, mask_R, self.real_B, self.mask_B)
+
+        if self.opt.bidirectional:
+            mask_L = self.mask[n:] if self.use_mask else None  # aligned with fake_L = G(R)
+            b_fake, b_real, _ = self._D_direction(self.fake_L, mask_L, self.real_A, self.mask_A)
+            self.loss_D_fake = (self.loss_D_fake + b_fake) * 0.5
+            self.loss_D_real = (self.loss_D_real + b_real) * 0.5
 
         # combine loss and calculate gradients
         self.loss_D = (self.loss_D_fake + self.loss_D_real) * 0.5
         return self.loss_D
 
+    def _G_GAN_direction(self, fake, fake_mask_src):
+        """Generator-side GAN loss for one direction (fake should fool D)."""
+        pred_fake = self.netD(fake)
+        fmask = self._gan_mask(fake_mask_src, pred_fake) if self.use_mask else None
+        return self.criterionGAN(pred_fake, True, mask=fmask).mean()
+
     def compute_G_loss(self):
-        """Calculate GAN and NCE loss for the generator"""
-        fake = self.fake_B
-        # First, G(A) should fake the discriminator
+        """Calculate GAN and NCE loss for the generator (both directions if --bidirectional)."""
+        n = self.real_A.size(0)
+        # First, G(A) should fake the discriminator (and G(B) too, if bidirectional)
         if self.opt.lambda_GAN > 0.0:
-            pred_fake = self.netD(fake)
-            fake_mask = self._gan_mask(self.mask[:self.real_A.size(0)], pred_fake) if self.use_mask else None
-            self.loss_G_GAN = self.criterionGAN(pred_fake, True, mask=fake_mask).mean() * self.opt.lambda_GAN
+            g = self._G_GAN_direction(self.fake_B, self.mask[:n] if self.use_mask else None)
+            if self.opt.bidirectional:
+                g = (g + self._G_GAN_direction(self.fake_L, self.mask[n:] if self.use_mask else None)) * 0.5
+            self.loss_G_GAN = g * self.opt.lambda_GAN
         else:
             self.loss_G_GAN = 0.0
 
@@ -291,8 +349,11 @@ class CUTModel(BaseModel):
         else:
             self.loss_NCE, self.loss_NCE_bd = 0.0, 0.0
 
-        if self.opt.nce_idt and self.opt.lambda_NCE > 0.0:
-            self.loss_NCE_Y = self.calculate_NCE_loss(self.real_B, self.idt_B, self.mask_B if self.use_mask else None)
+        # Second-direction standard PatchNCE: the nce_idt identity term and the
+        # bidirectional R->L structure term share the same form NCE(real_B, G(real_B)).
+        if self.opt.lambda_NCE > 0.0 and (self.opt.nce_idt or self.opt.bidirectional):
+            tgt = self.idt_B if self.opt.nce_idt else self.fake_L
+            self.loss_NCE_Y = self.calculate_NCE_loss(self.real_B, tgt, self.mask_B if self.use_mask else None)
             loss_NCE_both = (self.loss_NCE + self.loss_NCE_Y) * 0.5
         else:
             loss_NCE_both = self.loss_NCE
