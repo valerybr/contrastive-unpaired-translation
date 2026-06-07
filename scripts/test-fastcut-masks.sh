@@ -52,6 +52,7 @@ run_test() {
     --finding_filter "${FINDING_FILTER}" \
     --name "${name}" \
     --model cut --CUT_mode CUT \
+    --masked_loss True \
     --split "${SPLIT}" \
     --phase test \
     --epoch "${EPOCH}" \
