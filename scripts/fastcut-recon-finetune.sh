@@ -1,12 +1,12 @@
 #!/bin/bash
 #SBATCH --job-name=fastcut_recon_ft
-#SBATCH --output=/home/valeryb/logs/fastcut_recon_ft.out
-#SBATCH --error=/home/valeryb/logs/fastcut_recon_ft.err
-#SBATCH --partition=gpu-v100
-#SBATCH --gres=gpu:v100:1
+#SBATCH --output=/home/valeryb/logs/fastcut_ddp.out
+#SBATCH --error=/home/valeryb/logs/fastcut_ddp.err
+#SBATCH --partition=gpu-rtx
+#SBATCH --gres=gpu:rtx6000:6
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=4
-#SBATCH --mem=16G
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=32G
 #SBATCH --time=24:00:00
 
 # Paired-reconstruction finetuning for FastCUT (contralateral L-CC -> R-CC).
@@ -25,25 +25,38 @@ source /home/valeryb/.bashrc
 conda activate mgdetect
 cd /home/valeryb/contrastive-unpaired-translation
 
+
+# DDP-specific tunables
+export NCCL_ASYNC_ERROR_HANDLING=1
+export OMP_NUM_THREADS=4
+# Bump NCCL collective timeout from 10 min → 30 min to tolerate slow NFS
+# writes (rank 0 saves checkpoints to a shared filesystem while other ranks
+# wait at the post-save barrier).
+export TORCH_NCCL_BLOCKING_WAIT=1
+export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
+export TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC=1800
+
+
+
 # --- base run to finetune from -------------------------------------------------
-BASE_NAME=${BASE_NAME:?set BASE_NAME to the collapsed FastCUT run to resume}
+BASE_NAME=${BASE_NAME:-vindr_scheduled_ddp_g1_nce5_m_bd_20260607}
 BASE_EPOCH=${BASE_EPOCH:-latest}     # checkpoint epoch to load (e.g. 200 or latest)
-EPOCH_COUNT=${EPOCH_COUNT:-1}        # first epoch index of the finetune run
+EPOCH_COUNT=${EPOCH_COUNT:-201}        # first epoch index of the finetune run
 
 # --- reconstruction weights (L1 recommended; L2/MSE available) -----------------
-LAMBDA_L1=${LAMBDA_L1:-10}
+LAMBDA_L1=${LAMBDA_L1:-5}
 LAMBDA_L2=${LAMBDA_L2:-0}
 
 # --- finetune optimization: low LR, short schedule -----------------------------
 LR=${LR:-0.00005}
-N_EPOCHS=${N_EPOCHS:-20}
-N_EPOCHS_DECAY=${N_EPOCHS_DECAY:-10}
+N_EPOCHS=${N_EPOCHS:-50}
+N_EPOCHS_DECAY=${N_EPOCHS_DECAY:-30}
 
-DATA_ROOT=${DATA_ROOT:-/home/management/projects/gilba/valeryb/data/vindr/images}
-ANNOTATIONS=${ANNOTATIONS:-/home/management/projects/gilba/valeryb/data/vindr/finding_annotations.csv}
+DATA_ROOT=${DATA_ROOT:-/home/management/projects/gilba/valeryb/data/vindr-masks/images}
+ANNOTATIONS=${ANNOTATIONS:-/home/management/projects/gilba/valeryb/data/vindr-masks/finding_annotations.csv}
 CKPT_DIR=${CKPT_DIR:-/home/management/projects/gilba/valeryb/cut_checkpoints}
 
-RUN_NAME=${RUN_NAME:-${BASE_NAME}_reconft_$(date +%Y%m%d)}
+RUN_NAME=${RUN_NAME:-${BASE_NAME}_reconft_l1${LAMBDA_L1}_l2${LAMBDA_L2}_$(date +%Y%m%d)}
 
 # --continue_train loads from checkpoints/<name>/, so seed the new run's dir with
 # the base run's checkpoints (so we finetune a copy and never clobber the base).
@@ -58,22 +71,21 @@ python train.py \
   --annotations_csv "$ANNOTATIONS" \
   --split training \
   --flip_right \
-  --crop_width 360 \
   --masked_loss \
   --name "$RUN_NAME" \
   --CUT_mode FastCUT \
   --dataset_mode bilateral \
-  --continue_train --epoch "$BASE_EPOCH" --epoch_count "$EPOCH_COUNT" \
   --lr "$LR" --n_epochs "$N_EPOCHS" --n_epochs_decay "$N_EPOCHS_DECAY" \
-  --lambda_GAN 1 --lambda_NCE 10 \
+  --lambda_GAN 1 --lambda_NCE 5 \
   --lambda_L1 "$LAMBDA_L1" --lambda_L2 "$LAMBDA_L2" \
-  --gpu_ids 0 \
   --batch_size 2 \
   --num_threads 4 \
   --display_id 0 \
   --checkpoints_dir "$CKPT_DIR" \
   --use_wandb \
-  --wandb_project cut-windr
+  --wandb_project fastcut-vindr \
+  --wandb_run_name $RUN_NAME \
+  --continue_train --epoch "$BASE_EPOCH" --epoch_count "$EPOCH_COUNT" 
 
 # Watch wandb recon_L1/recon_L2 (should fall) and the web/ samples: fake_B should
 # start diverging from the input L toward R. If D_fake collapses, lower LAMBDA_L1.
