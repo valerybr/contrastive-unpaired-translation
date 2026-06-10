@@ -52,6 +52,12 @@ class CUTModel(BaseModel):
                             help="Gaussian feather radius (px) for blending foreground over the background, so masking introduces no hard step edge at the boundary. 0 = hard binary mask (old behaviour).")
         parser.add_argument('--mask_erode', type=int, default=1,
                             help="Erode the foreground by this many cells for the GAN/NCE loss masks, so the scored region stays strictly inside the kept (feathered) region and no boundary ring is left unconstrained. 0 = no erosion.")
+        parser.add_argument('--lambda_L1', type=float, default=0.0,
+                            help="weight for paired L1 reconstruction L1(G(A), B). Requires "
+                                 "--dataset_mode bilateral (true paired R). 0 disables.")
+        parser.add_argument('--lambda_L2', type=float, default=0.0,
+                            help="weight for paired L2/MSE reconstruction MSE(G(A), B). Requires "
+                                 "--dataset_mode bilateral (true paired R). 0 disables.")
 
         parser.set_defaults(pool_size=0)  # no image pooling
 
@@ -86,6 +92,17 @@ class CUTModel(BaseModel):
                   "(it H-flips inputs and undoes the --flip_right / crop_width canonical orientation).")
             opt.flip_equivariance = False
 
+        # Paired pixel reconstruction (L1/L2) is only meaningful when real_B is the
+        # *true* contralateral of real_A — i.e. the paired `bilateral` adapter.
+        # unpaired_bilateral / scheduled_bilateral hand out a random R, so a pixel
+        # target is undefined there; fail loudly rather than train on noise.
+        self.use_recon = self.isTrain and (opt.lambda_L1 > 0.0 or opt.lambda_L2 > 0.0)
+        if self.use_recon and opt.dataset_mode != 'bilateral':
+            raise ValueError(
+                f"--lambda_L1/--lambda_L2 need paired targets: use --dataset_mode bilateral "
+                f"(got {opt.dataset_mode!r}). unpaired_bilateral/scheduled_bilateral provide a "
+                "random R, so pixel reconstruction is undefined.")
+
         # specify the training losses you want to print out.
         # The training/test scripts will call <BaseModel.get_current_losses>
         self.loss_names = ['G_GAN', 'D_real', 'D_fake', 'G', 'NCE']
@@ -103,6 +120,12 @@ class CUTModel(BaseModel):
             if 'NCE_Y' not in self.loss_names:
                 self.loss_names += ['NCE_Y']
             self.visual_names += ['fake_L']
+
+        if self.use_recon:
+            if opt.lambda_L1 > 0.0:
+                self.loss_names += ['recon_L1']
+            if opt.lambda_L2 > 0.0:
+                self.loss_names += ['recon_L2']
 
         if self.isTrain:
             self.model_names = ['G', 'F', 'D']
@@ -123,7 +146,8 @@ class CUTModel(BaseModel):
             for nce_layer in self.nce_layers:
                 self.criterionNCE.append(PatchNCELoss(opt).to(self.device))
 
-            self.criterionIdt = torch.nn.L1Loss().to(self.device)
+            self.criterionIdt = torch.nn.L1Loss().to(self.device)  # also reused for the L1 recon term
+            self.criterionL2 = torch.nn.MSELoss().to(self.device)
             self.optimizer_G = torch.optim.Adam(self.netG.parameters(), lr=opt.lr, betas=(opt.beta1, opt.beta2))
             self.optimizer_D = torch.optim.Adam(self.netD.parameters(), lr=opt.lr, betas=(opt.beta1, opt.beta2))
             self.optimizers.append(self.optimizer_G)
@@ -266,6 +290,19 @@ class CUTModel(BaseModel):
         a = self._feather(mask)
         return x * a + self.opt.mask_bg_value * (1.0 - a)
 
+    def _recon(self, fake, real, mask_src):
+        """(L1, L2) reconstruction between a translation and its paired target.
+
+        ``fake`` is already mask-blended in ``forward()``; mask ``real`` the same
+        way so the constant background cancels and only the foreground is scored.
+        Each term is computed only when its weight is positive (else a zero scalar).
+        """
+        if mask_src is not None:
+            real = self._apply_mask(real, mask_src)
+        l1 = self.criterionIdt(fake, real) if self.opt.lambda_L1 > 0.0 else fake.new_zeros(())
+        l2 = self.criterionL2(fake, real) if self.opt.lambda_L2 > 0.0 else fake.new_zeros(())
+        return l1, l2
+
     @staticmethod
     def _erode(mask, r):
         """Binary morphological erosion by radius ``r`` cells (min-pool). No-op for r<=0."""
@@ -358,7 +395,19 @@ class CUTModel(BaseModel):
         else:
             loss_NCE_both = self.loss_NCE
 
-        self.loss_G = self.loss_G_GAN + loss_NCE_both
+        # Paired pixel reconstruction (only on the paired `bilateral` adapter; the
+        # guard in __init__ enforces that). Symmetric under --bidirectional: the
+        # R->L translation reconstructs real_A, averaged to keep the same budget.
+        self.loss_recon_L1 = self.loss_recon_L2 = 0.0
+        if self.use_recon:
+            l1, l2 = self._recon(self.fake_B, self.real_B, self.mask_B if self.use_mask else None)
+            if self.opt.bidirectional:
+                l1b, l2b = self._recon(self.fake_L, self.real_A, self.mask_A if self.use_mask else None)
+                l1, l2 = (l1 + l1b) * 0.5, (l2 + l2b) * 0.5
+            self.loss_recon_L1 = self.opt.lambda_L1 * l1
+            self.loss_recon_L2 = self.opt.lambda_L2 * l2
+
+        self.loss_G = self.loss_G_GAN + loss_NCE_both + self.loss_recon_L1 + self.loss_recon_L2
         return self.loss_G
 
     def calculate_NCE_loss(self, src, tgt, mask=None):

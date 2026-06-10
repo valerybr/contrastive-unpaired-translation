@@ -160,5 +160,6 @@ Controlled by `--preprocess {resize_and_crop | crop | scale_width | scale_width_
 - `--gpu_ids 0,1,2` enables DataParallel via `model.parallelize()`; `--gpu_ids -1` forces CPU. Under `torchrun`, `--gpu_ids` is ignored (each rank binds to its `LOCAL_RANK`).
 - `batch_size=1` is the tested default; larger batches work but NCE includes the `--nce_includes_all_negatives_from_minibatch` flag which changes the negative-sampling semantics. Under DDP, `--batch_size` is per-rank.
 - `phase=train` at test time is intentional for datasets without a test split (e.g. grumpifycat) — see `experiments/grumpifycat_launcher.py`.
+- `--lambda_L1` / `--lambda_L2` (CUT/FastCUT) add a paired pixel reconstruction term `Lk(G(A), B)` for supervised finetuning against identity collapse; both default `0.0` (no-op). They require `--dataset_mode bilateral` (true paired R) and raise otherwise; symmetric under `--bidirectional`. See `docs/fastcut-loss-bidirectional.md` and `scripts/fastcut-recon-finetune.sh`.
 - `tox.ini` exists but is not wired to a test runner; ignore unless you are adding one.
 - `CUT_EXPLAINED.md` is a deep-dive on the NCE objective, `PatchSampleF`, and why `data_dependent_initialize` exists — read it before touching `cut_model.py` or `networks.py:PatchSampleF`.
