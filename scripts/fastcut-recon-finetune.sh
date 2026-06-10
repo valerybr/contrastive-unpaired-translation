@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=fastcut_recon_ft
-#SBATCH --output=/home/valeryb/logs/fastcut_ddp.out
-#SBATCH --error=/home/valeryb/logs/fastcut_ddp.err
+#SBATCH --output=/home/valeryb/logs/fastcut_ddp1.out
+#SBATCH --error=/home/valeryb/logs/fastcut_ddp1.err
 #SBATCH --partition=gpu-rtx
 #SBATCH --gres=gpu:rtx6000:6
 #SBATCH --ntasks=1
@@ -44,8 +44,8 @@ BASE_EPOCH=${BASE_EPOCH:-latest}     # checkpoint epoch to load (e.g. 200 or lat
 EPOCH_COUNT=${EPOCH_COUNT:-201}        # first epoch index of the finetune run
 
 # --- reconstruction weights (L1 recommended; L2/MSE available) -----------------
-LAMBDA_L1=${LAMBDA_L1:-5}
-LAMBDA_L2=${LAMBDA_L2:-0}
+LAMBDA_L1=${LAMBDA_L1:-0}
+LAMBDA_L2=${LAMBDA_L2:-5}
 
 # --- finetune optimization: low LR, short schedule -----------------------------
 LR=${LR:-0.00005}
@@ -54,7 +54,7 @@ N_EPOCHS_DECAY=${N_EPOCHS_DECAY:-30}
 
 DATA_ROOT=${DATA_ROOT:-/home/management/projects/gilba/valeryb/data/vindr-masks/images}
 ANNOTATIONS=${ANNOTATIONS:-/home/management/projects/gilba/valeryb/data/vindr-masks/finding_annotations.csv}
-CKPT_DIR=${CKPT_DIR:-/home/management/projects/gilba/valeryb/cut_checkpoints}
+CKPT_DIR=${CKPT_DIR:-/home/management/projects/gilba/valeryb/fastcut_checkpoints}
 
 RUN_NAME=${RUN_NAME:-${BASE_NAME}_reconft_l1${LAMBDA_L1}_l2${LAMBDA_L2}_$(date +%Y%m%d)}
 
