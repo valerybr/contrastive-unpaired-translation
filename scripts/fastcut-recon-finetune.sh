@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=fastcut_recon_ft
-#SBATCH --output=/home/valeryb/logs/fastcut_ddp1.out
-#SBATCH --error=/home/valeryb/logs/fastcut_ddp1.err
+#SBATCH --output=/home/valeryb/logs/fastcut_ddp.out
+#SBATCH --error=/home/valeryb/logs/fastcut_ddp.err
 #SBATCH --partition=gpu-rtx
 #SBATCH --gres=gpu:rtx6000:6
 #SBATCH --ntasks=1
@@ -44,13 +44,21 @@ BASE_EPOCH=${BASE_EPOCH:-latest}     # checkpoint epoch to load (e.g. 200 or lat
 EPOCH_COUNT=${EPOCH_COUNT:-201}        # first epoch index of the finetune run
 
 # --- reconstruction weights (L1 recommended; L2/MSE available) -----------------
-LAMBDA_L1=${LAMBDA_L1:-0}
-LAMBDA_L2=${LAMBDA_L2:-5}
+LAMBDA_L1=${LAMBDA_L1:-5}
+LAMBDA_L2=${LAMBDA_L2:-0}
 
 # --- finetune optimization: low LR, short schedule -----------------------------
+# NOTE: train.py loops `range(epoch_count, n_epochs + n_epochs_decay + 1)`, so
+# --n_epochs/--n_epochs_decay are ABSOLUTE epoch numbers, not extra epochs. We
+# express the finetune length as *additional* epochs (FT_*) and derive the
+# absolute values from EPOCH_COUNT, so the loop is never empty when resuming.
 LR=${LR:-0.00005}
-N_EPOCHS=${N_EPOCHS:-50}
-N_EPOCHS_DECAY=${N_EPOCHS_DECAY:-30}
+FT_EPOCHS=${FT_EPOCHS:-50}              # full-LR finetune epochs
+FT_EPOCHS_DECAY=${FT_EPOCHS_DECAY:-30}  # LR-decay finetune epochs
+N_EPOCHS=$(( EPOCH_COUNT + FT_EPOCHS - 1 ))   # absolute epoch at which decay starts
+N_EPOCHS_DECAY=${FT_EPOCHS_DECAY}
+echo "[finetune] epochs ${EPOCH_COUNT}..$(( N_EPOCHS + N_EPOCHS_DECAY )) " \
+     "(${FT_EPOCHS} full-LR + ${FT_EPOCHS_DECAY} decay); n_epochs=${N_EPOCHS} n_epochs_decay=${N_EPOCHS_DECAY}"
 
 DATA_ROOT=${DATA_ROOT:-/home/management/projects/gilba/valeryb/data/vindr-masks/images}
 ANNOTATIONS=${ANNOTATIONS:-/home/management/projects/gilba/valeryb/data/vindr-masks/finding_annotations.csv}
@@ -66,7 +74,7 @@ if [ "$RUN_NAME" != "$BASE_NAME" ]; then
     cp "$CKPT_DIR/$BASE_NAME/latest_net_"*.pth "$CKPT_DIR/$RUN_NAME/"
 fi
 
-python train.py \
+torchrun --standalone --nnodes=1 --nproc_per_node=6 train.py \
   --dataroot "$DATA_ROOT" \
   --annotations_csv "$ANNOTATIONS" \
   --split training \
@@ -78,13 +86,14 @@ python train.py \
   --lr "$LR" --n_epochs "$N_EPOCHS" --n_epochs_decay "$N_EPOCHS_DECAY" \
   --lambda_GAN 1 --lambda_NCE 5 \
   --lambda_L1 "$LAMBDA_L1" --lambda_L2 "$LAMBDA_L2" \
-  --batch_size 2 \
+  --batch_size 1 \
   --num_threads 4 \
   --display_id 0 \
   --checkpoints_dir "$CKPT_DIR" \
   --use_wandb \
   --wandb_project fastcut-vindr \
   --wandb_run_name $RUN_NAME \
+  --bidirectional \
   --continue_train --epoch "$BASE_EPOCH" --epoch_count "$EPOCH_COUNT" 
 
 # Watch wandb recon_L1/recon_L2 (should fall) and the web/ samples: fake_B should
