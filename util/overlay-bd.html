@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>bidirectional L/R overlay — real ⟷ fake</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: #111; color: #ddd;
+    font: 13px/1.4 system-ui, sans-serif;
+  }
+  header {
+    position: sticky; top: 0; z-index: 10;
+    background: #1b1b1b; border-bottom: 1px solid #333;
+    padding: 10px 14px; display: flex; flex-wrap: wrap;
+    gap: 14px 22px; align-items: center;
+  }
+  header .group { display: flex; align-items: center; gap: 8px; }
+  header .group > label.title { color: #888; font-size: 11px; text-transform: uppercase; letter-spacing: .5px; }
+  .modes button, .zoom button {
+    background: #2a2a2a; color: #ccc; border: 1px solid #444;
+    padding: 5px 11px; border-radius: 5px; cursor: pointer; font-size: 13px;
+  }
+  .modes button.active, .zoom button.active { background: #3a6ea5; border-color: #4f8bcb; color: #fff; }
+  input[type=range] { width: 150px; vertical-align: middle; }
+  .val { display: inline-block; min-width: 34px; text-align: right; color: #9cf; font-variant-numeric: tabular-nums; }
+  .ctl { display: none; align-items: center; gap: 8px; }
+  .ctl.show { display: flex; }
+  label.chk { display: flex; align-items: center; gap: 5px; cursor: pointer; }
+
+  #grid {
+    --w: 360px; --fade: 0.5; --swipe: 50; --diffgain: 1;
+    display: grid; gap: 16px; padding: 16px;
+    grid-template-columns: repeat(auto-fill, minmax(var(--w), 1fr));
+  }
+  .card { background: #1a1a1a; border: 1px solid #2c2c2c; border-radius: 6px; padding: 8px; }
+  .card h4 { margin: 0 0 6px; font: 11px/1.2 monospace; color: #777; word-break: break-all; }
+  /* Two overlay boxes per card: the left-domain comparison (real_A ⟷ fake_L)
+     and the right-domain comparison (real_B ⟷ fake_B), shown side by side. */
+  .row { display: flex; gap: 6px; align-items: stretch; }
+
+  .box { position: relative; flex: 1 1 0; line-height: 0; background: #000; border-radius: 3px; overflow: hidden; }
+  .box img { display: block; width: 100%; height: auto; }
+  .box img.base { /* the real reference */ }
+  body.flip-reals .box img.base { transform: scaleX(-1); }
+  .box img.over { position: absolute; inset: 0; width: 100%; height: 100%; }
+
+  /* per-mode behaviour (both boxes share #grid's data-mode and CSS vars) */
+  #grid[data-mode="fade"]  .box img.over { opacity: var(--fade); }
+  #grid[data-mode="swipe"] .box img.over { clip-path: inset(0 calc(100% - var(--swipe) * 1%) 0 0); }
+  #grid[data-mode="swipe"] .box::after {
+    content: ""; position: absolute; top: 0; bottom: 0;
+    left: calc(var(--swipe) * 1%); width: 2px; margin-left: -1px;
+    background: #4f8bcb; pointer-events: none;
+  }
+  #grid[data-mode="diff"] .box { filter: contrast(var(--diffgain)); }
+  #grid[data-mode="diff"] .box img.over { mix-blend-mode: difference; }
+  #grid[data-mode="flicker"] .box img.over { opacity: 0; transition: none; }
+  #grid[data-mode="flicker"].flick-fake .box img.over { opacity: 1; }
+  /* row-reverse puts the over layer (fake) on the left and base (real) on the
+     right, so the two halves line up with the fixed corner labels
+     (.lbl.l = fake, .lbl.r = real) — same left/right convention as swipe. */
+  #grid[data-mode="sbs"] .box { display: flex; flex-direction: row-reverse; gap: 2px; background: transparent; }
+  #grid[data-mode="sbs"] .box img.base,
+  #grid[data-mode="sbs"] .box img.over {
+    position: static; width: 50%; height: auto;
+    clip-path: none; opacity: 1; mix-blend-mode: normal;
+  }
+
+  /* corner labels */
+  .box .lbl { position: absolute; top: 3px; font-size: 10px; padding: 1px 5px;
+    background: rgba(0,0,0,.55); color: #fff; border-radius: 3px; pointer-events: none; }
+  .box .lbl.l { left: 3px; }
+  .box .lbl.r { right: 3px; }
+  body.no-labels .box .lbl { display: none; }
+  #grid[data-mode="diff"] .box .lbl,
+  #grid[data-mode="flicker"] .box .lbl { display: none; }
+
+  /* finding bounding boxes (from findings.json) — reference reals only, red */
+  .bboxes { position: absolute; inset: 0; pointer-events: none; line-height: 0; }
+  /* the .base layer tracks the real's display flip so its boxes stay aligned */
+  body.flip-reals .box .bboxes.base { transform: scaleX(-1); }
+  .bbox { position: absolute; border: 2px solid; box-sizing: border-box; }
+  .bboxes.base .bbox { border-color: #ff5f5f; }  /* real reference findings */
+  .bbox .cap {
+    position: absolute; top: 0; left: 0; transform: translateY(-100%);
+    font: 9px/1.3 system-ui, sans-serif; padding: 0 3px; white-space: nowrap;
+    background: rgba(0,0,0,.6); color: #fff; border-radius: 2px;
+  }
+  .bboxes.base .bbox .cap { color: #ffcfcf; }
+  /* un-mirror caption text when the base layer is flipped */
+  body.flip-reals .box .bboxes.base .bbox .cap { transform: translateY(-100%) scaleX(-1); }
+  body.no-labels .bbox .cap { display: none; }
+  /* toggle: boxes default on. diff keeps the full-box overlay geometry, so the
+     boxes stay valid there with no extra rules. side-by-side splits the box
+     into two halves, so the base finding layer is confined to the real image. */
+  .bboxes { display: none; }
+  body.show-boxes .bboxes { display: block; }
+  /* side-by-side: row-reverse lays out fake (over) on the left, real (base) on
+     the right. Clamp the base layer to its own 50%-width image so the
+     normalized box coords map onto that image — the 2px flex gap shrinks each
+     half to calc(50% - 1px). */
+  #grid[data-mode="sbs"] .bboxes.base { left: auto; right: 0; width: calc(50% - 1px); }
+</style>
+</head>
+<body class="show-boxes">
+<header>
+  <div class="group">
+    <label class="title">Folder</label>
+    <select id="folder" style="background:#2a2a2a;color:#ccc;border:1px solid #444;
+            padding:5px 8px;border-radius:5px;font-size:13px;max-width:420px"></select>
+  </div>
+
+  <div class="group modes">
+    <label class="title">Mode</label>
+    <button data-mode="fade" class="active">Fade</button>
+    <button data-mode="swipe">Swipe</button>
+    <button data-mode="diff">Difference</button>
+    <button data-mode="flicker">Flicker</button>
+    <button data-mode="sbs">Side&nbsp;by&nbsp;side</button>
+  </div>
+
+  <div class="group ctl show" id="ctl-blend">
+    <label class="title" id="blend-label">fake opacity</label>
+    <input type="range" id="blend" min="0" max="100" value="50">
+    <span class="val" id="blend-val">50</span>
+  </div>
+
+  <div class="group ctl" id="ctl-flick">
+    <label class="title">Flicker (ms)</label>
+    <input type="range" id="flick" min="100" max="1500" step="50" value="500">
+    <span class="val" id="flick-val">500</span>
+  </div>
+
+  <div class="group ctl" id="ctl-diff">
+    <label class="title">Diff gain</label>
+    <input type="range" id="diffgain" min="100" max="600" value="100">
+    <span class="val" id="diffgain-val">1.0×</span>
+  </div>
+
+  <div class="group">
+    <label class="title">Size</label>
+    <input type="range" id="size" min="180" max="1600" step="20" value="360">
+    <span class="val" id="size-val">360</span>
+  </div>
+
+  <div class="group zoom" id="zoom">
+    <label class="title">Zoom</label>
+    <button data-w="360" class="active">1×</button>
+    <button data-w="720">2×</button>
+    <button data-w="1080">3×</button>
+    <button data-w="1440">4×</button>
+    <button data-w="100%">Full</button>
+  </div>
+
+  <div class="group">
+    <label class="chk"><input type="checkbox" id="flipreals"> flip reals</label>
+    <label class="chk"><input type="checkbox" id="labels" checked> labels</label>
+    <label class="chk"><input type="checkbox" id="boxes" checked> boxes</label>
+  </div>
+
+  <div class="group"><span class="val" id="count" style="color:#888"></span></div>
+</header>
+
+<div id="grid" data-mode="fade"></div>
+
+<script>
+const grid = document.getElementById('grid');
+const countEl = document.getElementById('count');
+const folderSel = document.getElementById('folder');
+
+// Everything is discovered at runtime by parsing the directory autoindex
+// (the <a href> links Python's http.server emits). Works when results/ is
+// served over HTTP, e.g.
+//   cd results && python -m http.server 8000   ->  http://localhost:8000/overlay-bd.html
+//
+// A "result folder" is any directory that has an images/ subfolder. Inside it
+// the bidirectional test saves up to four views that share identical filenames:
+//   real_A (L)   fake_L (G(R))   real_B (R)   fake_B (fake_R = G(L))
+// We compare them in two boxes: left-domain real_A ⟷ fake_L and right-domain
+// real_B ⟷ fake_B. fake_L / fake_B may be absent (a non-bidirectional run only
+// has fake_B); each box is shown only when both of its views exist.
+
+// Parse one HTML page (an autoindex, or a CUT-generated index.html if the
+// folder has one) into: subdir basenames, file basenames, and the raw relative
+// hrefs with their path kept. The raw hrefs matter because a results page's
+// links look like images/real_B/<id>.png — there is no images/ subdir link to
+// key off, so result folders are detected from that path prefix instead.
+async function listEntries(dir) {
+  const res = await fetch(dir || './', { headers: { Accept: 'text/html' } });
+  if (!res.ok) throw new Error(`HTTP ${res.status} for ${dir || './'}`);
+  const html = await res.text();
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  const dirs = [], files = [], hrefs = [];
+  for (const a of doc.querySelectorAll('a[href]')) {
+    const raw = a.getAttribute('href') || '';
+    if (!raw || raw.startsWith('?') || raw.startsWith('#') ||
+        raw.startsWith('/') || raw.includes('://') ||
+        raw === '../' || raw === './') continue;
+    const clean = decodeURIComponent(raw.split('?')[0].split('#')[0]);
+    if (clean === '..' || clean === '.') continue;
+    hrefs.push(clean);
+    const name = clean.split('/').filter(Boolean).pop() || '';
+    if (!name) continue;
+    (clean.endsWith('/') ? dirs : files).push(name);
+  }
+  return { dirs, files, hrefs };
+}
+
+// Image filenames inside a folder's images/<view>/ directory.
+async function listImages(dir) {
+  const { files } = await listEntries(dir);
+  const names = files.filter(n => /\.(png|jpe?g|webp)$/i.test(n));
+  return [...new Set(names)].sort();
+}
+
+// BFS the served tree for result folders. A folder qualifies if it has an
+// images/ subdir (plain autoindex) or its page links into images/... (a CUT
+// index.html). We fetch only directory pages (never the 200-file image
+// folders) and stop descending as soon as a folder qualifies. Returns base
+// paths ending in '/' (or '' if the served root itself holds images/).
+async function discoverFolders(root = '', maxDepth = 4) {
+  const found = [];
+  const queue = [{ path: root, depth: 0 }];
+  while (queue.length) {
+    const { path, depth } = queue.shift();
+    let entries;
+    try { entries = await listEntries(path); } catch { continue; }
+    const hasImages = entries.dirs.includes('images') ||
+                      entries.hrefs.some(h => /^images\//i.test(h));
+    if (hasImages) { found.push(path); continue; }
+    if (depth < maxDepth) {
+      for (const d of entries.dirs) queue.push({ path: path + d + '/', depth: depth + 1 });
+    }
+  }
+  return found.sort();
+}
+
+// Which images/<view>/ subdirs a result folder actually has. Used to decide
+// which comparison boxes to render. Falls back to probing the four known views
+// directly when the images/ page lists files instead of subdir links.
+async function listViews(base) {
+  const views = new Set();
+  try {
+    const { dirs, hrefs } = await listEntries(base + 'images/');
+    for (const d of dirs) views.add(d);
+    for (const h of hrefs) {                       // e.g. "real_B/0001.png"
+      const seg = h.split('/').filter(Boolean);
+      if (seg.length >= 2) views.add(seg[0]);
+    }
+  } catch { /* fall through to probing */ }
+  if (!views.size) {
+    for (const v of ['real_A', 'fake_L', 'real_B', 'fake_B']) {
+      try { if ((await listImages(base + 'images/' + v + '/')).length) views.add(v); }
+      catch { /* missing view */ }
+    }
+  }
+  return views;
+}
+
+// Build one absolutely-positioned overlay layer of finding boxes. `boxes` is a
+// list of {box:[x0,y0,x1,y1] (normalized), label}. `cls` is 'base' (boxes on
+// the real reference) — the only class used here (reference-only findings).
+function boxLayer(boxes, cls) {
+  const layer = document.createElement('div');
+  layer.className = 'bboxes ' + cls;
+  for (const b of boxes) {
+    const [x0, y0, x1, y1] = b.box;
+    const d = document.createElement('div');
+    d.className = 'bbox';
+    d.style.left = (x0 * 100) + '%';
+    d.style.top = (y0 * 100) + '%';
+    d.style.width = ((x1 - x0) * 100) + '%';
+    d.style.height = ((y1 - y0) * 100) + '%';
+    if (b.label) {
+      const cap = document.createElement('span');
+      cap.className = 'cap';
+      cap.textContent = b.label;
+      d.appendChild(cap);
+    }
+    layer.appendChild(d);
+  }
+  return layer;
+}
+
+// One overlay box comparing a real reference (base) with its translation (over).
+// `refBoxes` are the real's findings (drawn red on the base layer).
+function makeBox(base, f, opts) {
+  const box = document.createElement('div');
+  box.className = 'box';
+  box.innerHTML = `
+    <img class="base" loading="lazy" src="${base}images/${opts.real}/${f}" alt="${opts.real}">
+    <img class="over" loading="lazy" src="${base}images/${opts.fake}/${f}" alt="${opts.fake}">
+    <span class="lbl l">${opts.fakeLabel}</span>
+    <span class="lbl r">${opts.realLabel}</span>`;
+  if (opts.refBoxes && opts.refBoxes.length) box.appendChild(boxLayer(opts.refBoxes, 'base'));
+  return box;
+}
+
+function buildCards(files, base, findings, views) {
+  const hasLeft  = views.has('real_A') && views.has('fake_L');
+  const hasRight = views.has('real_B') && views.has('fake_B');
+  const frag = document.createDocumentFragment();
+  for (const f of files) {
+    const card = document.createElement('div');
+    card.className = 'card';
+    const h4 = document.createElement('h4');
+    h4.textContent = f.replace(/\.[^.]+$/, '');
+    const row = document.createElement('div');
+    row.className = 'row';
+    const fd = findings[f] || {};
+    // Left-domain comparison: real L vs fake_L = G(R).
+    if (hasLeft) {
+      row.appendChild(makeBox(base, f, {
+        real: 'real_A', fake: 'fake_L', realLabel: 'real_A (L)', fakeLabel: 'fake_L',
+        refBoxes: fd.real_A,
+      }));
+    }
+    // Right-domain comparison: real R vs fake_B = fake_R = G(L).
+    if (hasRight) {
+      row.appendChild(makeBox(base, f, {
+        real: 'real_B', fake: 'fake_B', realLabel: 'real_B (R)', fakeLabel: 'fake_B (fake_R)',
+        refBoxes: fd.real_B,
+      }));
+    }
+    card.appendChild(h4);
+    card.appendChild(row);
+    frag.appendChild(card);
+  }
+  grid.appendChild(frag);
+  countEl.textContent = files.length + ' studies';
+}
+
+function showLoadError(err, base) {
+  countEl.textContent = '';
+  grid.removeAttribute('data-mode');
+  grid.style.display = 'block';
+  const where = base != null ? `<code>${base}images/</code>` : 'the result folders';
+  grid.innerHTML = `
+    <div style="max-width:640px;margin:40px auto;padding:20px;
+                background:#241a1a;border:1px solid #5a2a2a;border-radius:8px;color:#e6c0c0">
+      <h3 style="margin-top:0;color:#ff9a9a">Couldn't list ${where}</h3>
+      <p>The viewer reads its folder/file lists from the directory autoindex at runtime,
+         which needs <code>results/</code> served over HTTP (browsers block directory reads
+         over <code>file://</code>). From the <code>results/</code> directory run:</p>
+      <pre style="background:#000;padding:10px;border-radius:5px;overflow:auto">python -m http.server 8000</pre>
+      <p>then open <code>http://localhost:8000/overlay-bd.html</code>. A result folder is any
+         directory with an <code>images/</code> subfolder holding <code>real_A</code> /
+         <code>real_B</code> and at least one of <code>fake_L</code> / <code>fake_B</code>.</p>
+      <p style="color:#a88">Details: ${String(err)}</p>
+    </div>`;
+}
+
+async function loadFolder(base) {
+  grid.innerHTML = '';
+  grid.style.display = '';
+  grid.dataset.mode = mode;
+  countEl.textContent = 'loading…';
+  try {
+    const views = await listViews(base);
+    // Enumerate samples from whichever real view exists (filenames are shared).
+    const realDir = views.has('real_B') ? 'real_B' : views.has('real_A') ? 'real_A' : null;
+    if (!realDir) throw new Error('no real_A/ or real_B/ view found under ' + base + 'images/');
+    const files = await listImages(base + 'images/' + realDir + '/');
+    if (!files.length) throw new Error('no image files found in ' + base + 'images/' + realDir + '/');
+    // Optional sidecar of finding boxes; absent (404) just means "no boxes".
+    let findings = {};
+    try {
+      const r = await fetch(base + 'findings.json');
+      if (r.ok) findings = await r.json();
+    } catch { /* no findings.json — fine */ }
+    buildCards(files, base, findings, views);
+  } catch (err) {
+    showLoadError(err, base);
+  }
+}
+
+(async () => {
+  let folders;
+  try {
+    folders = await discoverFolders('', 4);
+  } catch (err) {
+    showLoadError(err, null);
+    return;
+  }
+  if (!folders.length) {
+    showLoadError(new Error('no folders with an images/ subfolder were found'), null);
+    return;
+  }
+  folderSel.innerHTML = folders
+    .map(p => `<option value="${p}">${p.replace(/\/$/, '') || '.'}</option>`)
+    .join('');
+  folderSel.addEventListener('change', () => loadFolder(folderSel.value));
+  loadFolder(folders[0]);
+})();
+
+// ---- controls ----
+const blend = document.getElementById('blend');
+const blendVal = document.getElementById('blend-val');
+const blendLabel = document.getElementById('blend-label');
+const flick = document.getElementById('flick');
+const flickVal = document.getElementById('flick-val');
+const diffgain = document.getElementById('diffgain');
+const diffgainVal = document.getElementById('diffgain-val');
+const size = document.getElementById('size');
+const sizeVal = document.getElementById('size-val');
+const zoomBtns = document.querySelectorAll('#zoom button');
+
+const ctlBlend = document.getElementById('ctl-blend');
+const ctlFlick = document.getElementById('ctl-flick');
+const ctlDiff  = document.getElementById('ctl-diff');
+
+let mode = 'fade';
+let fadeVal = 50;   // remembered separately per slider use
+let swipeVal = 50;
+let flickTimer = null;
+
+function applyBlend() {
+  if (mode === 'swipe') {
+    grid.style.setProperty('--swipe', swipeVal);
+    blendVal.textContent = swipeVal;
+  } else { // fade
+    grid.style.setProperty('--fade', (fadeVal / 100).toFixed(2));
+    blendVal.textContent = fadeVal;
+  }
+}
+
+function startFlicker() {
+  stopFlicker();
+  flickTimer = setInterval(() => grid.classList.toggle('flick-fake'),
+                           parseInt(flick.value, 10));
+}
+function stopFlicker() {
+  if (flickTimer) { clearInterval(flickTimer); flickTimer = null; }
+  grid.classList.remove('flick-fake');
+}
+
+function setMode(m) {
+  mode = m;
+  grid.dataset.mode = m;
+  document.querySelectorAll('.modes button').forEach(b =>
+    b.classList.toggle('active', b.dataset.mode === m));
+
+  ctlBlend.classList.toggle('show', m === 'fade' || m === 'swipe');
+  ctlFlick.classList.toggle('show', m === 'flicker');
+  ctlDiff.classList.toggle('show', m === 'diff');
+
+  if (m === 'swipe') { blendLabel.textContent = 'swipe (fake →)'; blend.value = swipeVal; }
+  else if (m === 'fade') { blendLabel.textContent = 'fake opacity'; blend.value = fadeVal; }
+
+  if (m === 'flicker') startFlicker(); else stopFlicker();
+  applyBlend();
+}
+
+document.querySelectorAll('.modes button').forEach(b =>
+  b.addEventListener('click', () => setMode(b.dataset.mode)));
+
+blend.addEventListener('input', () => {
+  if (mode === 'swipe') swipeVal = +blend.value; else fadeVal = +blend.value;
+  applyBlend();
+});
+flick.addEventListener('input', () => {
+  flickVal.textContent = flick.value;
+  if (mode === 'flicker') startFlicker();
+});
+diffgain.addEventListener('input', () => {
+  const g = (+diffgain.value / 100);
+  grid.style.setProperty('--diffgain', g);
+  diffgainVal.textContent = g.toFixed(1) + '×';
+});
+// --w drives the grid column min-width; bigger -> larger cards, fewer per row.
+// The slider gives fine control (180–1600px); the Zoom presets jump to common
+// multiples, and "Full" (100%) forces a single full-width column. Each card
+// holds two boxes (and side-by-side splits each into two), so prefer a larger
+// size when using Side by side.
+size.addEventListener('input', () => {
+  grid.style.setProperty('--w', size.value + 'px');
+  sizeVal.textContent = size.value;
+  zoomBtns.forEach(b => b.classList.remove('active'));  // freehand size: no preset active
+});
+
+zoomBtns.forEach(b => b.addEventListener('click', () => {
+  const w = b.dataset.w;
+  grid.style.setProperty('--w', w.endsWith('%') ? w : w + 'px');
+  zoomBtns.forEach(x => x.classList.toggle('active', x === b));
+  if (!w.endsWith('%')) { size.value = w; sizeVal.textContent = w; }  // sync slider for px presets
+}));
+
+document.getElementById('flipreals').addEventListener('change', e =>
+  document.body.classList.toggle('flip-reals', e.target.checked));
+document.getElementById('labels').addEventListener('change', e =>
+  document.body.classList.toggle('no-labels', !e.target.checked));
+document.getElementById('boxes').addEventListener('change', e =>
+  document.body.classList.toggle('show-boxes', e.target.checked));
+
+setMode('fade');
+</script>
+</body>
+</html>

@@ -67,9 +67,11 @@ run_test() {
     --checkpoints_dir "${CHECKPOINTS_DIR}" \
     --bilateral_size ${BILATERAL_SIZE}
 
-  # Emit findings.json alongside the saved images so util/overlay.html can draw
-  # the finding bounding boxes. Mirrors the geometry args above (same
-  # bilateral_size / finding_filter) so the boxes line up with the saved PNGs.
+  # Emit findings.json alongside the saved images so util/overlay-bd.html can
+  # draw the finding bounding boxes on both lateralities. Mirrors the geometry
+  # args above (same bilateral_size / finding_filter / --flip_right) so the
+  # real_B boxes land in the same flipped L-canonical frame as the saved real_B
+  # PNG — without --flip_right they'd be mirrored relative to the image.
   python -m util.write_findings \
     --dataroot "${DATAROOT}" \
     --annotations_csv "${ANNOTATIONS_CSV}" \
@@ -79,7 +81,8 @@ run_test() {
     --phase test \
     --epoch "${EPOCH}" \
     --results_dir "${RESULTS_DIR}" \
-    --bilateral_size ${BILATERAL_SIZE}
+    --bilateral_size ${BILATERAL_SIZE} \
+    --flip_right
 }
 
 # Paired `bilateral` adapter (deterministic, no shuffling on either breast) so
