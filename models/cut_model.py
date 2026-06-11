@@ -113,11 +113,12 @@ class CUTModel(BaseModel):
             self.loss_names += ['NCE_Y']
             self.visual_names += ['idt_B']
 
-        if opt.bidirectional and self.isTrain:
-            # Second direction R->L: G(real_B) is a real translation (fake_L), scored
-            # by its own GAN + standard NCE (NCE_Y). Add the log/visual if not already
-            # present from nce_idt.
-            if 'NCE_Y' not in self.loss_names:
+        if opt.bidirectional:
+            # Second direction R->L: G(real_B) is a real translation (fake_L). At
+            # train time it's scored by its own GAN + standard NCE (NCE_Y); at test
+            # time there is no loss but we still want to *see* it, so the visual is
+            # exposed either way (forward() produces fake_L whenever bidirectional).
+            if self.isTrain and 'NCE_Y' not in self.loss_names:
                 self.loss_names += ['NCE_Y']
             self.visual_names += ['fake_L']
 
@@ -225,7 +226,9 @@ class CUTModel(BaseModel):
         # Run the shared G over both reals when we need the second direction: the
         # identity branch (nce_idt) OR the bidirectional shared-G branch. fake[:n] is
         # G(real_A)=fake_R, fake[n:] is G(real_B)=fake_L/idt_B.
-        both = (self.opt.nce_idt or self.opt.bidirectional) and self.opt.isTrain
+        # nce_idt only needs the second forward at train time; bidirectional needs
+        # it at test time too, so fake_L = G(real_B) is produced for visualization.
+        both = (self.opt.nce_idt and self.opt.isTrain) or self.opt.bidirectional
         self.real = torch.cat((self.real_A, self.real_B), dim=0) if both else self.real_A
         # Foreground mask aligned with self.real (same cat / flip as the images).
         if self.use_mask:
