@@ -36,9 +36,13 @@
     grid-template-columns: repeat(auto-fill, minmax(var(--w), 1fr));
   }
   .card { background: #1a1a1a; border: 1px solid #2c2c2c; border-radius: 6px; padding: 8px; }
+  /* full-width banner explaining why a comparison box is hidden */
+  .note { grid-column: 1 / -1; background: #2a2412; border: 1px solid #5a4a1a;
+    color: #e6d39a; border-radius: 6px; padding: 10px 12px; font-size: 12px; line-height: 1.5; }
+  .note code { color: #fff; }
   .card h4 { margin: 0 0 6px; font: 11px/1.2 monospace; color: #777; word-break: break-all; }
-  /* Two overlay boxes per card: the left-domain comparison (real_A ⟷ fake_L)
-     and the right-domain comparison (real_B ⟷ fake_B), shown side by side. */
+  /* Two overlay boxes per card: the A-domain comparison (real_A ⟷ fake_A)
+     and the B-domain comparison (real_B ⟷ fake_B), shown side by side. */
   .row { display: flex; gap: 6px; align-items: stretch; }
 
   .box { position: relative; flex: 1 1 0; line-height: 0; background: #000; border-radius: 3px; overflow: hidden; }
@@ -178,10 +182,11 @@ const folderSel = document.getElementById('folder');
 //
 // A "result folder" is any directory that has an images/ subfolder. Inside it
 // the bidirectional test saves up to four views that share identical filenames:
-//   real_A (L)   fake_L (G(R))   real_B (R)   fake_B (fake_R = G(L))
-// We compare them in two boxes: left-domain real_A ⟷ fake_L and right-domain
-// real_B ⟷ fake_B. fake_L / fake_B may be absent (a non-bidirectional run only
-// has fake_B); each box is shown only when both of its views exist.
+//   real_A (L)   fake_A = G(real_B)   real_B (R)   fake_B = G(real_A)
+// We compare each real with the fake of the SAME domain, in two boxes:
+// A-domain real_A ⟷ fake_A and B-domain real_B ⟷ fake_B. fake_A / fake_B may
+// be absent (a non-bidirectional run only has fake_B); each box is shown only
+// when both of its views exist.
 
 // Parse one HTML page (an autoindex, or a CUT-generated index.html if the
 // folder has one) into: subdir basenames, file basenames, and the raw relative
@@ -252,7 +257,7 @@ async function listViews(base) {
     }
   } catch { /* fall through to probing */ }
   if (!views.size) {
-    for (const v of ['real_A', 'fake_L', 'real_B', 'fake_B']) {
+    for (const v of ['real_A', 'fake_A', 'fake_L', 'real_B', 'fake_B']) {
       try { if ((await listImages(base + 'images/' + v + '/')).length) views.add(v); }
       catch { /* missing view */ }
     }
@@ -300,8 +305,29 @@ function makeBox(base, f, opts) {
 }
 
 function buildCards(files, base, findings, views) {
-  const hasLeft  = views.has('real_A') && views.has('fake_L');
+  // The A-domain (R->A) translation is named fake_A; older runs saved it as
+  // fake_L. Use whichever exists so the viewer works on both.
+  const aFake = views.has('fake_A') ? 'fake_A' : views.has('fake_L') ? 'fake_L' : null;
+  const hasLeft  = views.has('real_A') && aFake;
   const hasRight = views.has('real_B') && views.has('fake_B');
+
+  // When a comparison box can't be built, say so (and which views were found)
+  // instead of silently dropping it — usually the test run didn't save the
+  // second-direction fake, so re-run test.py with --bidirectional.
+  if (!hasLeft || !hasRight) {
+    const found = [...views].sort().join(', ') || '(none)';
+    const missing = [];
+    if (!hasLeft)  missing.push('A-domain box (needs <code>real_A</code> + <code>fake_A</code>/<code>fake_L</code>)');
+    if (!hasRight) missing.push('B-domain box (needs <code>real_B</code> + <code>fake_B</code>)');
+    const note = document.createElement('div');
+    note.className = 'note';
+    note.innerHTML = `Hiding ${missing.join(' and ')}. Views found in this folder: ` +
+      `<code>${found}</code>.` + (!hasLeft
+        ? ` No second-direction fake here — re-run <code>test.py</code> with <code>--bidirectional</code> to save <code>fake_A</code>.`
+        : '');
+    grid.appendChild(note);
+  }
+
   const frag = document.createDocumentFragment();
   for (const f of files) {
     const card = document.createElement('div');
@@ -311,17 +337,17 @@ function buildCards(files, base, findings, views) {
     const row = document.createElement('div');
     row.className = 'row';
     const fd = findings[f] || {};
-    // Left-domain comparison: real L vs fake_L = G(R).
+    // A-domain comparison: real_A (L) vs fake_A = G(real_B).
     if (hasLeft) {
       row.appendChild(makeBox(base, f, {
-        real: 'real_A', fake: 'fake_L', realLabel: 'real_A (L)', fakeLabel: 'fake_L',
+        real: 'real_A', fake: aFake, realLabel: 'real_A (L)', fakeLabel: aFake + ' = G(B)',
         refBoxes: fd.real_A,
       }));
     }
-    // Right-domain comparison: real R vs fake_B = fake_R = G(L).
+    // B-domain comparison: real_B (R) vs fake_B = G(real_A).
     if (hasRight) {
       row.appendChild(makeBox(base, f, {
-        real: 'real_B', fake: 'fake_B', realLabel: 'real_B (R)', fakeLabel: 'fake_B (fake_R)',
+        real: 'real_B', fake: 'fake_B', realLabel: 'real_B (R)', fakeLabel: 'fake_B = G(A)',
         refBoxes: fd.real_B,
       }));
     }
@@ -348,7 +374,7 @@ function showLoadError(err, base) {
       <pre style="background:#000;padding:10px;border-radius:5px;overflow:auto">python -m http.server 8000</pre>
       <p>then open <code>http://localhost:8000/overlay-bd.html</code>. A result folder is any
          directory with an <code>images/</code> subfolder holding <code>real_A</code> /
-         <code>real_B</code> and at least one of <code>fake_L</code> / <code>fake_B</code>.</p>
+         <code>real_B</code> and at least one of <code>fake_A</code> / <code>fake_B</code>.</p>
       <p style="color:#a88">Details: ${String(err)}</p>
     </div>`;
 }

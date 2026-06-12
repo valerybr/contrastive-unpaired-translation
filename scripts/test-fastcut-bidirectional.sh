@@ -15,9 +15,9 @@
 # images side by side:
 #
 #     real_A  = L            (left CC, the canonical-oriented domain)
-#     fake_B  = G(L) = fake_R  (L translated to the right domain)
+#     fake_B  = G(real_A)      (L translated to the right/B domain)
 #     real_B  = R            (paired right CC, flipped to L orientation)
-#     fake_L  = G(R) = fake_L  (R translated back to the left domain)
+#     fake_A  = G(real_B)      (R translated back to the left/A domain)
 #
 # The paired adapter keeps both breasts fixed and unshuffled, so the L->R and
 # R->L outputs line up with their true contralateral reference.
@@ -41,8 +41,8 @@ NUM_TEST="${NUM_TEST:-200}"
 RESULTS_DIR="${RESULTS_DIR:-/home/management/projects/gilba/valeryb/fastcut_results}"
 CHECKPOINTS_DIR="${CHECKPOINTS_DIR:-/home/management/projects/gilba/valeryb/fastcut_checkpoints}"
 BILATERAL_SIZE="${BILATERAL_SIZE:-512 360}"
-# either_finding so a finding on the left (paired with fake_R) OR the right
-# (paired with fake_L) yields non-empty boxes in the overlay. Override e.g.
+# either_finding so a finding on the left (paired with fake_B) OR the right
+# (paired with fake_A) yields non-empty boxes in the overlay. Override e.g.
 # FINDING_FILTER=no_finding for the original normals-only behaviour.
 FINDING_FILTER="${FINDING_FILTER:-either_finding}"
 

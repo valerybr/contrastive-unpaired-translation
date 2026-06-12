@@ -212,16 +212,16 @@ def test_recon_bidirectional_symmetric():
                         bidirectional=True)
         data = _synthetic_batch()
         model = _build_and_step(opt, data)
-        assert opt.bidirectional and hasattr(model, 'fake_L')
+        assert opt.bidirectional and hasattr(model, 'fake_A')
 
         real_b_m = model._apply_mask(model.real_B, model.mask_B)
         real_a_m = model._apply_mask(model.real_A, model.mask_A)
         exp_l1 = opt.lambda_L1 * 0.5 * (
             model.criterionIdt(model.fake_B, real_b_m)
-            + model.criterionIdt(model.fake_L, real_a_m))
+            + model.criterionIdt(model.fake_A, real_a_m))
         exp_l2 = opt.lambda_L2 * 0.5 * (
             model.criterionL2(model.fake_B, real_b_m)
-            + model.criterionL2(model.fake_L, real_a_m))
+            + model.criterionL2(model.fake_A, real_a_m))
         assert torch.allclose(model.loss_recon_L1, exp_l1)
         assert torch.allclose(model.loss_recon_L2, exp_l2)
         assert math.isfinite(float(model.loss_recon_L1))
