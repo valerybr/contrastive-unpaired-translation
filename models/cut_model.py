@@ -129,7 +129,12 @@ class CUTModel(BaseModel):
                 self.loss_names += ['recon_L2']
 
         if self.isTrain:
-            self.model_names = ['G', 'F', 'D']
+            # netF (the PatchSampleF MLP) only exists to serve the NCE loss. With
+            # --lambda_NCE 0 it's never forwarded, so its lazy Linear layers are
+            # never built and it has zero parameters — wrapping a param-less module
+            # in DDP raises. Drop it from model_names so it isn't parallelized,
+            # broadcast, saved, or loaded.
+            self.model_names = ['G', 'F', 'D'] if opt.lambda_NCE > 0.0 else ['G', 'D']
         else:  # during test time, only load G
             self.model_names = ['G']
 
@@ -196,12 +201,13 @@ class CUTModel(BaseModel):
         # update G
         self.set_requires_grad(self.netD, False)
         self.optimizer_G.zero_grad()
-        if self.opt.netF == 'mlp_sample':
+        # optimizer_F only exists when lambda_NCE > 0 (see data_dependent_initialize).
+        if self.opt.lambda_NCE > 0.0 and self.opt.netF == 'mlp_sample':
             self.optimizer_F.zero_grad()
         self.loss_G = self.compute_G_loss()
         self.loss_G.backward()
         self.optimizer_G.step()
-        if self.opt.netF == 'mlp_sample':
+        if self.opt.lambda_NCE > 0.0 and self.opt.netF == 'mlp_sample':
             self.optimizer_F.step()
 
     def set_input(self, input):
@@ -387,7 +393,9 @@ class CUTModel(BaseModel):
         if self.opt.lambda_NCE > 0.0:
             self.loss_NCE = self.calculate_NCE_loss(self.real_A, self.fake_B, self.mask_A if self.use_mask else None)
         else:
-            self.loss_NCE, self.loss_NCE_bd = 0.0, 0.0
+            # NCE off: still define both NCE losses so get_current_losses (which reads
+            # every name in loss_names, incl. NCE_Y under --bidirectional) sees a value.
+            self.loss_NCE = self.loss_NCE_Y = 0.0
 
         # Second-direction standard PatchNCE: the nce_idt identity term and the
         # bidirectional R->L structure term share the same form NCE(real_B, G(real_B)).
