@@ -34,7 +34,7 @@ cd /home/valeryb/contrastive-unpaired-translation
 
 DATAROOT="${DATAROOT:-/home/management/projects/gilba/valeryb/data/vindr-masks/images}"
 ANNOTATIONS_CSV="${ANNOTATIONS_CSV:-/home/management/projects/gilba/valeryb/data/vindr-masks/finding_annotations.csv}"
-NAME1="${NAME1:-vindr_bidirectional_ddp_g1_nce5_masks}"
+NAME1="${NAME1:-vindr_bilateral_ddp_g1_nce5_m_bd_recon_l1100_l20_20260621}"
 SPLIT="${SPLIT:-training}"
 EPOCH="${EPOCH:-latest}"
 NUM_TEST="${NUM_TEST:-200}"
@@ -44,7 +44,7 @@ BILATERAL_SIZE="${BILATERAL_SIZE:-512 360}"
 # either_finding so a finding on the left (paired with fake_B) OR the right
 # (paired with fake_A) yields non-empty boxes in the overlay. Override e.g.
 # FINDING_FILTER=no_finding for the original normals-only behaviour.
-FINDING_FILTER="${FINDING_FILTER:-either_finding}"
+FINDING_FILTER="${FINDING_FILTER:-no_finding}"
 
 run_test() {
   local mode="$1" name="$2"
@@ -55,7 +55,7 @@ run_test() {
     --dataset_mode "${mode}" \
     --finding_filter "${FINDING_FILTER}" \
     --name "${name}" \
-    --model cut --CUT_mode CUT \
+    --model cut --CUT_mode FastCUT \
     --bidirectional True \
     --flip_right \
     --masked_loss True \
