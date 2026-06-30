@@ -6,6 +6,7 @@ node_modules/
 debug*
 checkpoints/
 results/
+results-bd/
 build/
 dist/
 *.png
@@ -44,3 +45,4 @@ test/.coverage
 test/data/legacy_serialized.pt
 *~
 .idea
+figures/
